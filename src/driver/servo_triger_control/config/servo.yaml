@@ -1,0 +1,16 @@
+servo_triger_node:
+  ros__parameters:
+    pwmchip_path: /sys/class/pwm/pwmchip0
+    pwm_channel: 0
+    period_ns: 20000000
+    release_angle: 20.0
+    press_angle: 70.0
+    min_angle: 0.0
+    max_angle: 180.0
+    min_pulse_ns: 1000000
+    max_pulse_ns: 2000000
+    hold_time: 0.3
+    # Open-loop travel allowance; tune for the actual servo and load.
+    move_time: 0.3
+    timer_period: 0.01
+    export_timeout: 2.0

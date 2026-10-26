@@ -13,3 +13,14 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# NX native deployment outputs and local machine configuration
+/nx_deps/
+/build_nx/
+/install_nx/
+/deploy/nx/config.env
+/deploy/nx/hil.env
+/deploy/nx/reports/
+
+# Native local HIL runtime packages
+/hil_deps/

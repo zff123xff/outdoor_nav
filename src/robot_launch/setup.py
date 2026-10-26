@@ -29,6 +29,8 @@ setup(
     entry_points={
         "console_scripts": [
             "auto_set_gp_origin = robot_launch.auto_set_gp_origin:main",
+            "lifecycle_service_relay = robot_launch.lifecycle_service_relay:main",
+            "lifecycle_startup_watchdog = robot_launch.lifecycle_startup_watchdog:main",
         ],
     },
 )

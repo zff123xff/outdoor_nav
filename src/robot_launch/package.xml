@@ -6,13 +6,13 @@
   <maintainer email="todo@example.com">todo</maintainer>
   <license>Apache-2.0</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
-
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geographic_msgs</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
@@ -20,6 +20,7 @@
   <exec_depend>nav2_straight_planner</exec_depend>
   <exec_depend>nav2_costmap_2d</exec_depend>
   <exec_depend>rviz2</exec_depend>
+  <exec_depend>twist_mux</exec_depend>
   <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>nav2_input_bridge</exec_depend>
   <exec_depend>mavros</exec_depend>

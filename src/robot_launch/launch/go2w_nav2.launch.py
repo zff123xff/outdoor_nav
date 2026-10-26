@@ -8,9 +8,10 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, TextSubstitution
+from launch.substitutions import LaunchConfiguration, TextSubstitution, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 
 
 # Param names whose values are TF frame_ids. TF frame strings are literal —
@@ -86,14 +87,22 @@ def _rewrite_params_with_namespace(context, params_path_sub, ns_sub):
     src = params_path_sub.perform(context)
     with open(src, "r") as f:
         data = yaml.safe_load(f) or {}
+    # Costmap subnodes load their own YAML; a parent-node override is not enough.
+    use_clock = LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+    def rewrite_clock(value):
+        if isinstance(value, dict):
+            return {key: use_clock if key == "use_sim_time" else rewrite_clock(child)
+                    for key, child in value.items()}
+        if isinstance(value, list):
+            return [rewrite_clock(child) for child in value]
+        return value
+    data = rewrite_clock(data)
     ns_str = ns_sub.perform(context) if ns_sub is not None else ""
     prefix = "/" + ns_str.lstrip("/") if ns_str else ""
-    if not prefix:
-        return src
     rewritten = {}
     for key, value in data.items():
-        new_key = f"{prefix}/{key}" if not key.startswith("/") else key
-        rewritten[new_key] = _rewrite_params_values(value, prefix)
+        new_key = f"{prefix}/{key}" if prefix and not key.startswith("/") else key
+        rewritten[new_key] = _rewrite_params_values(value, prefix) if prefix else value
     tmp = NamedTemporaryFile(mode="w", prefix="nav2_params_", suffix=".yaml", delete=False)
     yaml.dump(rewritten, tmp, default_flow_style=False)
     tmp.close()
@@ -116,8 +125,10 @@ def generate_launch_description():
     pkg_share = get_package_share_directory("robot_launch")
     default_params = os.path.join(pkg_share, "config", "go2w_nav2.yaml")
 
-    livox_share = get_package_share_directory("livox_ros_driver2")
-    mid360_config = os.path.join(livox_share, "config", "MID360_config.json")
+    # Resolve only when the real driver is enabled (HIL needs no Livox package).
+    mid360_config = PathJoinSubstitution([
+        FindPackageShare("livox_ros_driver2"), "config", "MID360_config.json"
+    ])
 
     declare_robot_namespace = DeclareLaunchArgument(
         "robot_namespace",

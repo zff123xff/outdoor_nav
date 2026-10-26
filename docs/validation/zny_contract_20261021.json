@@ -1,0 +1,22 @@
+{
+  "domain_id": 96,
+  "fixture_only": true,
+  "physical_motion_tested": false,
+  "passed": true,
+  "no_clock": true,
+  "no_external_tf": true,
+  "full_odom_height": true,
+  "no_simulation_workspace": true,
+  "lidar_xyz": [
+    0.18,
+    0.0,
+    0.53
+  ],
+  "lidar_pitch_degrees": 18,
+  "wall_clock_for_costmap": true,
+  "best_effort_inputs": true,
+  "external_origin_and_invalid_rejection": true,
+  "legacy_defaults_preserved": true,
+  "velocity_output_and_stop": true,
+  "logs": "/tmp/zny_nav_contract_xiz35yir"
+}

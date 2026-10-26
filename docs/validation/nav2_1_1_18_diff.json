@@ -1,0 +1,120 @@
+{
+  "baseline": "https://github.com/ros-navigation/navigation2/tree/1.1.18",
+  "archive_sha256": "6123a8133f22ceda7675a9cd1f6c708aeff58e1cce201a983cb6ccd870914837",
+  "scope": "All maintained files under src/navigation2; comparison by bytes; excludes __pycache__. nav_2d packages compared with nav2_dwb_controller subdirectories.",
+  "packages": {
+    "nav2_common": {
+      "identical": 10,
+      "modified": [],
+      "local_only": [],
+      "upstream_only": []
+    },
+    "nav2_controller": {
+      "identical": 16,
+      "modified": [
+        "CMakeLists.txt",
+        "include/nav2_controller/controller_server.hpp",
+        "plugins.xml",
+        "src/controller_server.cpp"
+      ],
+      "local_only": [
+        "include/nav2_controller/plugins/position_goal_checker.hpp",
+        "plugins/position_goal_checker.cpp"
+      ],
+      "upstream_only": []
+    },
+    "nav2_core": {
+      "identical": 11,
+      "modified": [],
+      "local_only": [
+        "include/nav2_core/route_exceptions.hpp"
+      ],
+      "upstream_only": []
+    },
+    "nav2_costmap_2d": {
+      "identical": 97,
+      "modified": [
+        "include/nav2_costmap_2d/denoise/image_processing.hpp",
+        "include/nav2_costmap_2d/obstacle_layer.hpp",
+        "plugins/inflation_layer.cpp",
+        "plugins/obstacle_layer.cpp",
+        "src/costmap_2d_ros.cpp",
+        "test/unit/denoise_layer_test.cpp",
+        "test/unit/image_processing_test.cpp"
+      ],
+      "local_only": [],
+      "upstream_only": []
+    },
+    "nav2_input_bridge": {
+      "custom_package": true
+    },
+    "nav2_lifecycle_manager": {
+      "identical": 15,
+      "modified": [
+        "README.md"
+      ],
+      "local_only": [],
+      "upstream_only": []
+    },
+    "nav2_msgs": {
+      "identical": 35,
+      "modified": [
+        "CMakeLists.txt"
+      ],
+      "local_only": [
+        "action/ComputeAndTrackRoute.action",
+        "action/ComputeRoute.action",
+        "msg/EdgeCost.msg",
+        "msg/Route.msg",
+        "msg/RouteEdge.msg",
+        "msg/RouteNode.msg",
+        "srv/DynamicEdges.srv",
+        "srv/SetRouteGraph.srv"
+      ],
+      "upstream_only": []
+    },
+    "nav2_regulated_pure_pursuit_controller": {
+      "identical": 9,
+      "modified": [
+        "CMakeLists.txt",
+        "include/nav2_regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.hpp",
+        "src/regulated_pure_pursuit_controller.cpp",
+        "test/test_regulated_pp.cpp"
+      ],
+      "local_only": [
+        "include/nav2_regulated_pure_pursuit_controller/theta_star.hpp",
+        "src/theta_star.cpp"
+      ],
+      "upstream_only": []
+    },
+    "nav2_straight_planner": {
+      "custom_package": true
+    },
+    "nav2_util": {
+      "identical": 44,
+      "modified": [
+        "include/nav2_util/robot_utils.hpp"
+      ],
+      "local_only": [],
+      "upstream_only": []
+    },
+    "nav2_voxel_grid": {
+      "identical": 8,
+      "modified": [],
+      "local_only": [],
+      "upstream_only": []
+    },
+    "nav_2d_msgs": {
+      "identical": 8,
+      "modified": [],
+      "local_only": [],
+      "upstream_only": []
+    },
+    "nav_2d_utils": {
+      "identical": 14,
+      "modified": [],
+      "local_only": [],
+      "upstream_only": []
+    }
+  }
+}

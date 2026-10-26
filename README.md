@@ -135,6 +135,11 @@ echo "source [path_to_outdoor_nav]/install/setup.zsh" >> ~/.zshrc
 
 ## 仿真环境测试
 
+接北京仿真接口、由 NX 运行导航时，使用 `bash launch_hil.sh`。
+命名空间、时间和接口配置见 [北京 HIL 接入说明](deploy/hil/README.md)。
+NX 使用 `bash deploy/nx/run.sh hil`；原本地 Classic 适配使用 `hil-classic`。
+本次导航侧接口变更记录见 [ZNY_NAV_ALIGNMENT.md](docs/ZNY_NAV_ALIGNMENT.md)。
+
 在实机部署前，建议先在本地仿真环境中验证算法逻辑。仿真使用 Gazebo Classic v11.10.2 + ROS 2 Humble。
 
 ### 前置要求
