@@ -38,12 +38,6 @@ fi
     exit 1
 }
 source "$hil_install/local_setup.bash"
-# ros2 pkg also loads RMW: do not misreport middleware load failures as
-# missing twist_mux after suppressing the package lookup's stderr.
-if ! python3 -c 'from rclpy.utilities import get_rmw_implementation_identifier; print("[HIL] RMW: " + get_rmw_implementation_identifier())'; then
-    echo "[HIL] Cannot load ROS middleware ${RMW_IMPLEMENTATION:-default}. Check its installation and library paths before checking navigation dependencies." >&2
-    exit 1
-fi
 # Native local dependencies belong to this navigation workspace.
 if ! ros2 pkg prefix twist_mux >/dev/null 2>&1; then
     hil_deps_root="$SCRIPT_DIR/hil_deps/ros"

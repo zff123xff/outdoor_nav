@@ -148,13 +148,12 @@ void StraightPlanner::onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr ms
   if (goal_was_stopped_) {
     double dx = msg->pose.position.x - stopped_goal_x_;
     double dy = msg->pose.position.y - stopped_goal_y_;
-    const double goal_difference = std::hypot(dx, dy);
+    double dist = std::hypot(dx, dy);
 
-    if (goal_difference < 0.1) {
+    if (dist < 0.1) {
       RCLCPP_WARN(
         get_logger(),
-        "Rejecting repeated stopped goal (new-to-stopped goal difference=%.3f m < 0.1 m; "
-        "this is not robot-to-goal distance)", goal_difference);
+        "Rejecting goal that matches stopped goal (dist=%.3f m < 0.1 m)", dist);
       return;  // Discard, do not update latest_goal_
     }
     // Different goal, clear the stopped state and allow stop to work again
@@ -162,8 +161,7 @@ void StraightPlanner::onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr ms
     stop_requested_ = false;
     RCLCPP_INFO(
       get_logger(),
-      "New goal is different from stopped goal (goal difference=%.3f m), accepting",
-      goal_difference);
+      "New goal is different from stopped goal (dist=%.3f m), accepting", dist);
   }
 
   wait_fp_finish_after_reached_ = false;

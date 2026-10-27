@@ -121,7 +121,8 @@ void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
   t.child_frame_id = tf_child_frame_id_;
   t.transform.translation.x = msg->pose.pose.position.x;
   t.transform.translation.y = msg->pose.pose.position.y;
-  t.transform.translation.z = msg->pose.pose.position.z;
+  // t.transform.translation.z = msg->pose.pose.position.z;
+  t.transform.translation.z = 0.0;
   t.transform.rotation = msg->pose.pose.orientation;
   tf_broadcaster_->sendTransform(t);
 }

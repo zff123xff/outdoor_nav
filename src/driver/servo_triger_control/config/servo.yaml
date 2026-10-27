@@ -2,7 +2,7 @@ servo_triger_node:
   ros__parameters:
     pwmchip_path: /sys/class/pwm/pwmchip0
     pwm_channel: 0
-    period_ns: 20000000
+    period_ns: 5000000
     release_angle: 20.0
     press_angle: 70.0
     min_angle: 0.0
