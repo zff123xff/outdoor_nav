@@ -21,6 +21,7 @@ from collections import deque
 from dataclasses import dataclass
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 
@@ -253,10 +254,16 @@ def main(args=None) -> None:
     node = MultiGoalToGpGoal()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # ExternalShutdownException: the context was already shut down (e.g.
+        # launch sent SIGINT during shutdown) — not an error.
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        # A second rcl_shutdown raises RCLError and exits with code 1, which
+        # launch reports as "process has died" — misleading for a clean exit.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

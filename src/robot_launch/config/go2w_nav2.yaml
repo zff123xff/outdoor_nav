@@ -126,6 +126,13 @@ nav2_input_bridge:
   ros__parameters:
     use_sim_time: false
     local_odom_topic: "mavros/odom"  # ROS 2 mavros publishes ~/odom; ROS 1 used local_position/odom
+    # Fallback odometry topic: used only while local_odom_topic has never
+    # delivered a message (e.g. a simulator publishing straight to /{ns}/odom).
+    local_odom_fallback_topic: "odom"
+    # Odometry watchdog: how long a gap in the odom stream is tolerated
+    # before the node reports that the odom->base_link TF is gone.
+    odom_timeout_s: 2.0
+    odom_watchdog_period_s: 1.0
 #乌兰察布
     reference_latitude: 40.9445353
     reference_longitude: 113.172819

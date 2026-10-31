@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>patrol_node</name>
+  <version>0.1.0</version>
+  <description>
+    Ping-pong patrol node and its action interface.
+
+    Exposes a patrol_node/action/Patrol action server whose goal carries the
+    two GPS endpoints of a patrol line. The node dispatches the endpoints to
+    /gp_goal one at a time and pushes the point it just reached back onto the
+    tail of the waypoint queue, so the robot walks the segment back and forth
+    until the goal is canceled.
+  </description>
+  <maintainer email="dev@example.com">dev</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <!-- lla_to_enu is shared with multi_goal_to_gp_goal so the ENU frame of
+       the arrival check matches the one nav2_input_bridge publishes in. -->
+  <depend>multi_goal_to_gp_goal</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>python3</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

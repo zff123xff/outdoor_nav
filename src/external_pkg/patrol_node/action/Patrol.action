@@ -1,0 +1,45 @@
+# Ping-pong patrol along the line segment between two GPS points.
+#
+# The robot travels start_point -> end_point -> start_point -> end_point ...
+# and keeps walking the segment back and forth until the goal is canceled
+# or max_laps round trips have been completed.
+#
+# This is a *primitive*: the identity fields (mission_id / agent_id /
+# capability_id / primitive_id) and the handover fields (current_pose /
+# final_pose) let a task dispatcher compose it with other primitives and
+# hand the robot over from one primitive to the next without a hard stop.
+
+# --- 任务标识：用于与其它基元组合、串联和结果归属 ---
+# Goal
+string mission_id                        # 任务 ID，同一任务内的多个基元保持一致
+string agent_id                          # 执行体 ID
+string capability_id                     # 基元能力 ID，默认 "patrol_line"
+string primitive_id                      # 本基元实例 ID，同一任务内唯一
+
+# --- 巡线段：两个端点 ---
+sensor_msgs/NavSatFix start_point        # A 端：巡线线段的一个端点（先到这边）
+sensor_msgs/NavSatFix end_point          # B 端：巡线线段的另一个端点
+
+# --- 过渡参数：给下一个基元留出平滑接管窗口 ---
+geometry_msgs/PoseStamped current_pose   # 接管本基元时机器人的位姿（过渡起点）
+float64 hold_time_at_endpoint_s          # 到达端点后的停留时间（秒），0 = 不停留
+uint32 max_laps                          # 最多往返趟数，0 = 无限（直到被取消）
+bool keep_moving_on_end                  # 基元结束时是否让机器人保持运动（false = 停车）
+---
+# Result: reported when the patrol stops.
+bool success                             # 是否跑完全部任务（取消时为 false）
+string message                           # 停止原因说明
+string mission_id                        # 回显任务标识
+string capability_id                     # 回显基元能力 ID
+string primitive_id                      # 回显基元实例 ID
+uint32 reached_points                    # 累计到达的点数（每到达一个端点 +1）
+uint32 laps                              # 完成的完整往返趟数（A→B→A 为 1 趟）
+geometry_msgs/PoseStamped final_pose     # 基元结束时机器人的位姿（交接给下一个基元）
+---
+# Feedback: published while the patrol is running.
+uint32 reached_points                    # 累计到达的点数
+uint32 laps                              # 完成的完整往返趟数
+string phase                             # to_start / to_end：当前正在驶向哪个端点
+string primitive_id                      # 回显基元实例 ID
+float64 distance_to_target_m             # 距当前目标点的水平距离（米）
+float64 segment_length_m                 # 巡线线段总长度（米）

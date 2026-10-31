@@ -1,0 +1,38 @@
+patrol_node:
+  ros__parameters:
+    use_sim_time: false
+
+    # Action server name (relative -> /{robot_namespace}/patrol).
+    action_name: "patrol"
+
+    # Output topic: one NavSatFix per waypoint, consumed by nav2_input_bridge.
+    goal_output_topic: "gp_goal"
+
+    # odom used for the arrival check. RELATIVE so it resolves to
+    # /{robot_namespace}/odom (the RELIABLE odom bridged by mavros_odom_relay).
+    odom_topic: "odom"
+
+    # Topic used to request an immediate stop when the patrol is canceled.
+    stop_topic: "stop_planner"
+
+    # frame_id stamped on the published NavSatFix.
+    frame_id: "gps"
+
+    # NavSatStatus.STATUS_FIX / NavSatStatus.SERVICE_GPS
+    navsat_status: 1
+    navsat_service: 1
+
+    # ENU origin used for the arrival check. MUST match nav2_input_bridge;
+    # the launch file loads these from the nav2 params yaml automatically.
+    reference_latitude: 0.0
+    reference_longitude: 0.0
+    reference_altitude: 0.0
+
+    # Arrival detection: the target counts as reached after `consecutive_required`
+    # consecutive samples within `reach_threshold_m`.
+    reach_threshold_m: 0.5
+    consecutive_required: 5
+    check_period_s: 0.1
+
+    # Feedback publish rate.
+    feedback_period_s: 0.5

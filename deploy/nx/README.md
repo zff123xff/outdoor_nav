@@ -25,9 +25,7 @@ rsync -av --exclude build --exclude install --exclude log \
 ```bash
 rsync -avz --itemize-changes \
   --exclude='.git/' --exclude='build*/' --exclude='install*/' --exclude='log/' \
-  --exclude='hil_deps/' --exclude='nx_deps/' --exclude='__pycache__/' --exclude='*.pyc' \
-  --exclude='/build.sh' --exclude='deploy/nx/config.env' --exclude='deploy/nx/hil.env' \
-  /home/nhy/Go2-w_nav/outdoor_nav/ hy@NX_IP:~/outdoor_nav/
+  /home/nhy/Go2-w_nav/outdoor_nav/ nhy@192.168.56.1:~/outdoor_nav/
 ```
 
 首次先加 `--dry-run` 查看清单，去掉后实际同步。源目录末尾 `/` 表示同步目录内容。本命令不删除 NX 独有文件；其他同路径源码会被覆盖。若板端还有单独修改的文件，应先备份或补充排除规则。

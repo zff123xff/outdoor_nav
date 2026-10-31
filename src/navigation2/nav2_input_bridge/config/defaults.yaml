@@ -2,12 +2,31 @@ nav2_input_bridge:
   ros__parameters:
     use_sim_time: false
 
-    local_odom_topic: "/mavros/local_position/odom"
+    # Topic names are RELATIVE on purpose: ROS 2 resolves them against the
+    # node namespace, so "/robot_a/mavros/odom" works when the node runs in
+    # /robot_a. An absolute name would ignore the namespace.
+    #
+    # NOTE: ROS 2 mavros publishes ~/odom (the local_position plugin), NOT the
+    # ROS 1 path ~/local_position/odom. Pointing at the ROS 1 path means no
+    # odometry arrives at all -> the odom->base_link TF is never published ->
+    # nav2's local_costmap reports "two or more unconnected trees".
+    local_odom_topic: "mavros/odom"
+
+    # Fallback odometry topic, used ONLY while the primary has never
+    # delivered a message. Covers a simulator that publishes straight to
+    # /{ns}/odom instead of /{ns}/mavros/odom. Empty string disables it.
+    local_odom_fallback_topic: "odom"
+
+    # Odometry watchdog: after odom_timeout_s without a message the node
+    # reports that the TF is missing (and the TF tree is split).
+    odom_timeout_s: 2.0
+    odom_watchdog_period_s: 1.0
+
     reference_latitude: 0.0
     reference_longitude: 0.0
     reference_altitude: 0.0
-    goal_input_topic: "/gp_goal"
-    goal_output_topic: "/goal_pose"
+    goal_input_topic: "gp_goal"
+    goal_output_topic: "goal_pose"
     goal_output_frame: "map"
 
     require_nav_sat_fix: true

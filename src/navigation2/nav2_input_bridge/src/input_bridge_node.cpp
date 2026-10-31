@@ -13,6 +13,54 @@
 namespace nav2_input_bridge
 {
 
+namespace
+{
+
+// Monotonic clock, independent of ROS time (use_sim_time may pause the ROS
+// clock, but the odom watchdog must keep running).
+int64_t steadyNowNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+constexpr double kOdomGracePeriodS = 3.0;    // silence before the first complaint
+constexpr double kOdomLogPeriodS = 10.0;     // repeat interval of the complaint
+
+std::string durabilityName(rclcpp::DurabilityPolicy p)
+{
+  return p == rclcpp::DurabilityPolicy::TransientLocal ? "TRANSIENT_LOCAL" : "VOLATILE";
+}
+
+std::string reliabilityName(rclcpp::ReliabilityPolicy p)
+{
+  return p == rclcpp::ReliabilityPolicy::Reliable ? "RELIABLE" : "BEST_EFFORT";
+}
+
+// Summarise the matched publishers of a topic so the operator can see what
+// the middleware knows about it.
+std::string describePublishers(
+  const rclcpp::Node * node, const std::string & topic)
+{
+  if (node == nullptr || topic.empty()) {
+    return "  (no subscription)";
+  }
+  const auto pubs = node->get_publishers_info_by_topic(topic);
+  if (pubs.empty()) {
+    return "  (no publisher connected)";
+  }
+  std::string out;
+  for (const auto & p : pubs) {
+    const auto & q = p.qos_profile();
+    out += "\n    - " + p.node_name() +
+      " [durability=" + durabilityName(q.durability()) +
+      ", reliability=" + reliabilityName(q.reliability()) + "]";
+  }
+  return out;
+}
+
+}  // namespace
+
 InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
 : Node("nav2_input_bridge", options)
 {
@@ -25,6 +73,12 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   // mavros namespace), not ~/local_position/odom — the latter path is
   // ROS 1 legacy.
   local_odom_topic_ = declare_parameter("local_odom_topic", std::string("mavros/odom"));
+  // Fallback odometry topic, used ONLY while the primary has never delivered
+  // a message. It covers a simulator that publishes straight to /{ns}/odom
+  // instead of /{ns}/mavros/odom. Empty string disables the fallback.
+  local_odom_fallback_topic_ = declare_parameter("local_odom_fallback_topic", std::string("odom"));
+  odom_timeout_s_ = declare_parameter("odom_timeout_s", 2.0);
+  odom_watchdog_period_s_ = declare_parameter("odom_watchdog_period_s", 1.0);
   goal_input_topic_ = declare_parameter("goal_input_topic", std::string("gp_goal"));
   uav_goal_input_topic_ = declare_parameter("uav_goal_input_topic", std::string("uav/target_gps"));
   target_detected_topic_ = declare_parameter("target_detected_topic", std::string("target_detected"));
@@ -58,9 +112,21 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
 
   rclcpp::QoS odom_qos(10);
   odom_qos.best_effort();
+  // Lambdas (not std::bind) because rclcpp only accepts a fixed set of
+  // callback signatures — a bound extra argument does not fit.
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     local_odom_topic_, odom_qos,
-    std::bind(&InputBridgeNode::onOdom, this, std::placeholders::_1));
+    [this](nav_msgs::msg::Odometry::SharedPtr msg) {
+      onOdom(msg, OdomSource::Primary);
+    });
+
+  if (!local_odom_fallback_topic_.empty()) {
+    odom_fallback_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      local_odom_fallback_topic_, odom_qos,
+      [this](nav_msgs::msg::Odometry::SharedPtr msg) {
+        onOdom(msg, OdomSource::Fallback);
+      });
+  }
 
   rclcpp::QoS goal_qos(10);
   goal_qos.best_effort();
@@ -104,14 +170,89 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   tf_child_frame_id_ = prefix.empty() ? "base_link" : prefix + "/base_link";
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
+  start_ns_ = steadyNowNs();
+  last_odom_log_ns_ = start_ns_;
+  odom_watchdog_ = create_wall_timer(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(odom_watchdog_period_s_)),
+    std::bind(&InputBridgeNode::checkOdomHealth, this));
+
+  const std::string primary_topic = odom_sub_->get_topic_name();
+  const std::string fallback_topic =
+    odom_fallback_sub_ ? odom_fallback_sub_->get_topic_name() : std::string("(disabled)");
+
   RCLCPP_INFO(
     get_logger(),
-    "TF broadcaster: %s -> %s (subscribed to %s)",
-    tf_frame_id_.c_str(), tf_child_frame_id_.c_str(), local_odom_topic_.c_str());
+    "TF broadcaster: %s -> %s (subscribed to %s, fallback %s)",
+    tf_frame_id_.c_str(), tf_child_frame_id_.c_str(),
+    primary_topic.c_str(), fallback_topic.c_str());
+  RCLCPP_INFO(
+    get_logger(),
+    "The %s -> %s TF is published ONLY while odometry arrives. Without it the "
+    "TF tree splits and nav2's local_costmap reports \"two or more unconnected "
+    "trees\"; this node will say so explicitly if no odometry shows up.",
+    tf_frame_id_.c_str(), tf_child_frame_id_.c_str());
 }
 
-void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
+void InputBridgeNode::onOdom(
+  const nav_msgs::msg::Odometry::SharedPtr msg, OdomSource source)
 {
+  // Source selection: the primary topic (mavros/odom) wins as soon as it
+  // delivers a message and keeps winning.
+  //
+  // The fallback topic (odom) is used ONLY when the primary is really
+  // unusable: no publisher connected on the primary topic AND the primary
+  // silent for longer than odom_timeout_s. The silence requirement matters
+  // because the odom relay republishes the primary data on the fallback
+  // topic — without it the fallback would win the race on every start and
+  // log a misleading warning.
+  if (source == OdomSource::Primary) {
+    if (active_odom_source_ != OdomSource::Primary) {
+      active_odom_source_ = OdomSource::Primary;
+      RCLCPP_INFO(
+        get_logger(),
+        "Odometry source: primary topic '%s' is live.",
+        odom_sub_->get_topic_name());
+    }
+  } else {
+    if (active_odom_source_ == OdomSource::Primary) {
+      return;  // the primary already won
+    }
+    if (active_odom_source_ == OdomSource::None) {
+      const std::string primary_topic = odom_sub_->get_topic_name();
+      const bool primary_has_publisher =
+        !get_publishers_info_by_topic(primary_topic).empty();
+      const double primary_silent_s = static_cast<double>(
+        steadyNowNs() - start_ns_) / 1e9;
+      if (primary_has_publisher || primary_silent_s < odom_timeout_s_) {
+        return;  // give the primary its chance
+      }
+      active_odom_source_ = OdomSource::Fallback;
+      RCLCPP_WARN(
+        get_logger(),
+        "No publisher on the primary odometry topic '%s' and no message for "
+        "%.1f s; using the fallback topic '%s' for the %s -> %s TF.",
+        primary_topic.c_str(), primary_silent_s,
+        odom_fallback_sub_ ? odom_fallback_sub_->get_topic_name() : "",
+        tf_frame_id_.c_str(), tf_child_frame_id_.c_str());
+    }
+    if (active_odom_source_ != OdomSource::Fallback) {
+      return;
+    }
+  }
+
+  const uint64_t previous = odom_count_.fetch_add(1, std::memory_order_relaxed);
+  last_odom_ns_.store(steadyNowNs(), std::memory_order_relaxed);
+  if (previous == 0) {
+    RCLCPP_INFO(
+      get_logger(),
+      "Odometry received on '%s' - broadcasting the %s -> %s TF.",
+      active_odom_source_ == OdomSource::Primary ?
+      odom_sub_->get_topic_name() :
+      (odom_fallback_sub_ ? odom_fallback_sub_->get_topic_name() : ""),
+      tf_frame_id_.c_str(), tf_child_frame_id_.c_str());
+  }
+
   if (!tf_broadcaster_) {
     return;
   }
@@ -125,6 +266,84 @@ void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
   t.transform.translation.z = 0.0;
   t.transform.rotation = msg->pose.pose.orientation;
   tf_broadcaster_->sendTransform(t);
+}
+
+void InputBridgeNode::checkOdomHealth()
+{
+  const int64_t now = steadyNowNs();
+  const uint64_t count = odom_count_.load(std::memory_order_relaxed);
+  const int64_t last = last_odom_ns_.load(std::memory_order_relaxed);
+  const double since_log_s = static_cast<double>(now - last_odom_log_ns_) / 1e9;
+
+  if (count == 0) {
+    // Never received anything: distinguish "nobody publishes" from
+    // "a publisher exists but the messages never arrive" (QoS or DDS
+    // mismatch between the two sides).
+    const double waited_s = static_cast<double>(now - start_ns_) / 1e9;
+    if (waited_s < kOdomGracePeriodS || since_log_s < kOdomLogPeriodS) {
+      return;
+    }
+    last_odom_log_ns_ = now;
+
+    const std::string primary_topic = odom_sub_->get_topic_name();
+    const auto pubs = get_publishers_info_by_topic(primary_topic);
+    // The static half of the tree is {map -> odom}; the map frame is the one
+    // the goals are published in (launch sets it to {ns}/map).
+    const std::string map_frame =
+      goal_output_frame_.empty() ? std::string("map") : goal_output_frame_;
+    if (pubs.empty()) {
+      const std::string fallback_note =
+        odom_fallback_sub_ ?
+        std::string(" The fallback topic '") + odom_fallback_sub_->get_topic_name() +
+        "' is subscribed as well and is empty too." :
+        std::string();
+      RCLCPP_ERROR(
+        get_logger(),
+        "NO ODOMETRY on '%s' after %.1f s and no publisher is connected. The "
+        "%s -> %s TF is therefore NOT published: the TF tree splits into "
+        "{%s -> %s} and {%s -> livox_frame} and nav2's local_costmap reports "
+        "\"Could not find a connection between %s and %s ... Tf has two or more "
+        "unconnected trees\". Start the odometry source (mavros/PX4 on the "
+        "robot, the simulator in HIL) and make sure it publishes '%s'.%s",
+        primary_topic.c_str(), waited_s,
+        tf_frame_id_.c_str(), tf_child_frame_id_.c_str(),
+        map_frame.c_str(), tf_frame_id_.c_str(),
+        tf_child_frame_id_.c_str(),
+        map_frame.c_str(), tf_child_frame_id_.c_str(),
+        primary_topic.c_str(), fallback_note.c_str());
+    } else {
+      RCLCPP_ERROR(
+        get_logger(),
+        "A publisher IS connected on '%s' but no message arrived in %.1f s. The "
+        "%s -> %s TF is therefore NOT published and nav2's local_costmap will "
+        "report \"two or more unconnected trees\". Publisher(s):%s\n"
+        "  Likely causes: the two sides run on a different ROS_DOMAIN_ID or a "
+        "different RMW implementation (Cyclone DDS vs Fast DDS cannot talk), "
+        "or the publisher uses TRANSIENT_LOCAL durability while this node "
+        "subscribes VOLATILE.",
+        primary_topic.c_str(), waited_s,
+        tf_frame_id_.c_str(), tf_child_frame_id_.c_str(),
+        describePublishers(this, primary_topic).c_str());
+    }
+    return;
+  }
+
+  // Odometry was flowing and stopped: the TF will expire from the tf2 buffer
+  // and the tree splits again.
+  const double age_s = static_cast<double>(now - last) / 1e9;
+  if (age_s <= odom_timeout_s_ || since_log_s < kOdomLogPeriodS) {
+    return;
+  }
+  last_odom_log_ns_ = now;
+  const std::string topic =
+    active_odom_source_ == OdomSource::Fallback && odom_fallback_sub_ ?
+    odom_fallback_sub_->get_topic_name() : odom_sub_->get_topic_name();
+  RCLCPP_ERROR(
+    get_logger(),
+    "ODOMETRY STOPPED: no message on '%s' for %.1f s. The %s -> %s TF will "
+    "expire from the tf2 buffer, the TF tree splits and nav2's local_costmap "
+    "will report \"two or more unconnected trees\". Check the odometry source.",
+    topic.c_str(), age_s, tf_frame_id_.c_str(), tf_child_frame_id_.c_str());
 }
 
 void InputBridgeNode::llaToEnu(

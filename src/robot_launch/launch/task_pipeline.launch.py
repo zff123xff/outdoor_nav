@@ -6,8 +6,10 @@ end-to-end namespaced:
     1. execute_task_server/execute_task.launch.py    - ExecuteTask service -> /waypoint_goals
     2. multi_goal_to_gp_goal/multi_goal_to_gp_goal.launch.py
                                                      - /waypoint_goals -> /gp_goal NavSatFix
-    3. swarms_backend (backend_nodes)   [optional]   - MQTT -> /{ns}/swarms_backend/global/multitask
-    4. multi_task_bridge                [optional]   - /{ns}/swarms_backend/global/multitask
+    3. patrol_node/patrol_node.launch.py             - /patrol action -> /gp_goal NavSatFix
+                                                     (ping-pong patrol between two GPS points)
+    4. swarms_backend (backend_nodes)   [optional]   - MQTT -> /{ns}/swarms_backend/global/multitask
+    5. multi_task_bridge                [optional]   - /{ns}/swarms_backend/global/multitask
                                                        -> calls /agent/{ns}/execute_task
 
 The namespaced topics chain together:
@@ -16,8 +18,13 @@ The namespaced topics chain together:
     /{ns}/waypoint_goals        (MultiGoal)
     /{ns}/gp_goal               (NavSatFix, one waypoint at a time)
     /{ns}/odom                  (input to multi_goal_to_gp_goal)
+    /{ns}/patrol                (action - patrol_node/action/Patrol)
 
-3/4 are the optional MQTT command chain, gated by the single mqtt switch: they
+NOTE: patrol_node and multi_goal_to_gp_goal both publish to /{ns}/gp_goal.
+Do not run a waypoint mission while a patrol is active — the two would
+fight over the robot's goal.
+
+4/5 are the optional MQTT command chain, gated by the single mqtt switch: they
 are OFF by default (mqtt:=false) and both start together with mqtt:=true, so
 no file editing is needed:
 
@@ -150,6 +157,20 @@ def generate_launch_description():
         launch_arguments={"robot_namespace": ns}.items(),
     )
 
+    # 3. patrol_node: /patrol action -> /gp_goal NavSatFix
+    # Ping-pong patrol between two GPS points. Idle until a Patrol goal
+    # arrives, so it is safe to always start it.
+    patrol_node_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("patrol_node"),
+                "launch",
+                "patrol_node.launch.py",
+            )
+        ),
+        launch_arguments={"robot_namespace": ns}.items(),
+    )
+
     # ===================== optional: MQTT command chain =====================
     # Both blocks are gated by the single mqtt switch (mqtt:=true to enable);
     # execute_task can still be called manually when mqtt:=false.
@@ -213,7 +234,8 @@ def generate_launch_description():
         declare_drone_id,
         execute_task_launch,
         multi_goal_to_gp_goal_launch,
-        # blocks 3/4 由 mqtt:=true 一起启用（默认关闭）
+        patrol_node_launch,
+        # blocks 4/5 由 mqtt:=true 一起启用（默认关闭）
         swarms_backend_launch,
         multi_task_bridge_launch,
     ])

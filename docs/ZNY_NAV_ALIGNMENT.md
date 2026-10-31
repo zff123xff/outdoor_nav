@@ -92,3 +92,67 @@ ros2 topic pub --once /robot_1/mavros/set_gp_origin geographic_msgs/msg/GeoPoint
 按用户要求撤回 TF 迁移和外部原点接入：公共定位与雷达安装 TF 恢复由导航发布；输入桥恢复原始逻辑，仅保留 z=odom.z 的修正。仿真私有模型 TF 和 RViz 显示合并链路保留，命名空间配置与项目结构整理不回退。必须重启两侧，避免旧仿真定位 TF 和新导航 TF 重复。
 
 当前验证记录位于相邻仿真项目 tests/results/navigation_tf_restored.json；simulation_tf_boundary.json 是此前方案的历史结果。
+
+## 故障记录：local_costmap 报 “two or more unconnected trees”
+
+### 现象
+
+```
+[robot_1.local_costmap.local_costmap]: Timed out waiting for transform from
+robot_1/base_link to robot_1/map to become available, tf error: Could not find a
+connection between 'robot_1/map' and 'robot_1/base_link' because they are not
+part of the same tree.Tf has two or more unconnected trees.
+```
+
+### 根因
+
+`robot_1/odom -> robot_1/base_link` 这条动态 TF **只由 nav2_input_bridge 在收到
+里程计时广播**。里程计不来 → 这条 TF 不存在 → TF 树被切成两半：
+
+```
+{robot_1/map -> robot_1/odom}      （静态发布）
+{robot_1/base_link -> robot_1/livox_frame}   （静态发布）
+```
+
+两半互不连通，local_costmap 无法把机器人位姿从 `robot_1/base_link` 变换到
+`robot_1/map`，于是反复打印上面这条错误。**错误信息指向 TF，实际原因是里程计
+没有到达 nav2_input_bridge。**
+
+排查命令（导航侧）：
+
+```bash
+ros2 topic info -v /robot_1/mavros/odom    # Publisher count 必须是 1
+ros2 topic hz   /robot_1/mavros/odom
+ros2 run tf2_ros tf2_echo robot_1/map robot_1/base_link
+```
+
+### 导航侧加固
+
+`nav2_input_bridge` 现在会自己说清楚原因，不再让 nav2 的 TF 报错单独承担诊断：
+
+- 启动时打印订阅的里程计话题、备用话题和广播的 TF 帧名；
+- 3 秒内没有任何里程计 → 每 10 秒打印一条 ERROR，区分两种情况：
+  - 话题上**没有发布者** → 提示去启动里程计源（实机 mavros/PX4、HIL 仿真）；
+  - 话题上**有发布者但收不到消息** → 提示两侧 ROS_DOMAIN_ID / RMW 实现不一致
+    （Cyclone DDS 与 Fast DDS 不能互通），或发布者用了 TRANSIENT_LOCAL 持久性
+    而本节点用 VOLATILE 订阅。
+- 里程计中途断流 → 打印 ODOMETRY STOPPED。
+- 新增 `local_odom_fallback_topic`（默认 `odom`）：仅当主话题
+  `mavros/odom` 上没有发布者、且超过 `odom_timeout_s` 无数据时，才改用备用话题，
+  覆盖“仿真直接发到 /{ns}/odom” 的情况。主话题一旦有数据就始终优先。
+
+参数（`nav2_input_bridge.ros__parameters`）：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `local_odom_topic` | `mavros/odom` | 主里程计话题（相对名，随命名空间解析） |
+| `local_odom_fallback_topic` | `odom` | 备用里程计话题，空字符串关闭 |
+| `odom_timeout_s` | `2.0` | 超过多久没有里程计算断流 |
+| `odom_watchdog_period_s` | `1.0` | 看门狗检查周期 |
+
+### 顺带修正
+
+`nav2_input_bridge/config/defaults.yaml` 原先写的是 ROS 1 的
+`/mavros/local_position/odom`；ROS 2 的 mavros 发布的是 `~/odom`，用 ROS 1 路径
+同样会导致没有里程计 → 同样的 TF 报错。已改为 `mavros/odom`，并把话题名改成相对
+名以支持命名空间。

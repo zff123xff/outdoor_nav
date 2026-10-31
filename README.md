@@ -503,7 +503,7 @@ ros2 topic echo /cmd_vel
 
 ```bash
 source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.5}}"
+ros2 topic pub /robot_1/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.5}}"
 ```
 
 预期：狗原地旋转。
