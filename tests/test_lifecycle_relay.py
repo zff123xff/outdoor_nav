@@ -13,7 +13,7 @@ class LifecycleReplyTests(unittest.TestCase):
         calls = []
         relay = SimpleNamespace(
             rpc_clients={'controller': (object(), object(), threading.Lock())},
-            timeout=.1, state=lambda name: next(iterator),
+            timeout=.1, activation_timeout=1., state=lambda name: next(iterator),
             call=lambda *args: calls.append(args),
             get_logger=lambda: SimpleNamespace(warning=lambda text: None, error=lambda text: None))
         request = ChangeState.Request()
@@ -37,6 +37,15 @@ class LifecycleReplyTests(unittest.TestCase):
         response = LifecycleRelay.change(relay, 'controller', request, ChangeState.Response())
         self.assertFalse(response.success)
         self.assertEqual(calls, [])
+
+    def test_activation_uses_startup_budget_without_replaying_transition(self):
+        relay, calls, request = self.fixture([SimpleNamespace(id=2)])
+        request.transition.id = 3
+        relay.call = lambda *args: calls.append(args) or SimpleNamespace(success=True)
+        response = LifecycleRelay.change(relay, 'controller', request, ChangeState.Response())
+        self.assertTrue(response.success)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-1], relay.activation_timeout)
 
 
 if __name__ == '__main__':

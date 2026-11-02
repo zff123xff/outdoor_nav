@@ -1,0 +1,146 @@
+Panels:
+  - Class: rviz_common/Displays
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Fixed Frame: robot/map
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: Robot
+      Enabled: true
+      TF Prefix: robot
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/PointCloud2
+      Name: MID360 points
+      Enabled: true
+      Topic:
+        Value: /robot/livox/lidar
+        Reliability Policy: Best Effort
+      Size (m): 0.02
+    - Class: rviz_default_plugins/Map
+      Name: Local costmap
+      Enabled: true
+      Alpha: 0.65
+      Color Scheme: costmap
+      Draw Behind: true
+      Topic:
+        Value: /robot/local_costmap/costmap
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Update Topic:
+        Value: /robot/local_costmap/costmap_updates
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/Path
+      Name: Tracking path
+      Enabled: true
+      Topic:
+        Value: /robot/received_global_plan
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Color: 25; 255; 70
+      Line Style: Billboards
+      Line Width: 0.035
+      Buffer Length: 1
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0.04
+    - Class: rviz_default_plugins/Path
+      Name: Collision projection
+      Enabled: true
+      Topic:
+        Value: /robot/lookahead_collision_arc
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Color: 255; 140; 20
+      Line Style: Billboards
+      Line Width: 0.025
+      Buffer Length: 1
+    - Class: rviz_default_plugins/PointStamped
+      Name: Lookahead point
+      Enabled: true
+      Topic:
+        Value: /robot/lookahead_point
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Color: 255; 220; 0
+      Radius: 0.06
+      History Length: 1
+    - Class: rviz_default_plugins/Polygon
+      Name: Robot footprint
+      Enabled: true
+      Topic:
+        Value: /robot/local_costmap/published_footprint
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Color: 80; 200; 255
+      Alpha: 1
+    - Class: rviz_default_plugins/Pose
+      Name: Navigation goal
+      Enabled: true
+      Topic:
+        Value: /robot/goal_pose
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Color: 230; 60; 255
+      Shape: Arrow
+      Shaft Length: 0.35
+      Shaft Radius: 0.035
+      Head Length: 0.15
+      Head Radius: 0.08
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+    - Class: rviz_default_plugins/Polygon
+      Name: Search region
+      Enabled: true
+      Topic:
+        Value: /robot/area_search/region
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 255; 170; 0
+      Alpha: 1
+    - Class: rviz_default_plugins/Polygon
+      Name: Assigned search region
+      Enabled: true
+      Topic:
+        Value: /robot/area_search/assigned_region
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 0; 220; 150
+      Alpha: 1
+    - Class: rviz_default_plugins/Map
+      Name: Exploration map
+      Enabled: true
+      Alpha: 0.65
+      Color Scheme: map
+      Draw Behind: true
+      Topic:
+        Value: /robot/area_search/map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Use Timestamp: false
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetGoal
+      Topic: /robot/goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 8
+      Pitch: 0.6
+      Yaw: 0.8

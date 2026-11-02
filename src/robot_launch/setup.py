@@ -15,9 +15,8 @@ setup(
         (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (
             os.path.join("share", package_name, "config"),
-            glob("config/*.yaml") + glob("config/*.rviz"),
+            glob("config/*.yaml"),
         ),
-        (os.path.join("share", package_name, "maps"), glob("maps/*")),
         (os.path.join("share", package_name, "rviz"), glob("rviz/*")),
     ],
     install_requires=["setuptools"],
@@ -28,6 +27,9 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            "ground_tilt_filter = robot_launch.ground_tilt_filter:main",
+            "visualization_tf = robot_launch.visualization_tf:main",
+            "remote_stop_bridge = robot_launch.remote_stop_bridge:main",
             "auto_set_gp_origin = robot_launch.auto_set_gp_origin:main",
             "lifecycle_service_relay = robot_launch.lifecycle_service_relay:main",
             "lifecycle_startup_watchdog = robot_launch.lifecycle_startup_watchdog:main",

@@ -1,5 +1,0 @@
-multi_task_bridge:
-  ros__parameters:
-    drone_id: 1
-    flight_alt_m: 5.0
-    swath_width_m: 5.0

@@ -6,9 +6,6 @@ default RELIABLE QoS. Without this relay Nav2 never receives odom and never
 publishes /cmd_vel.
 """
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -16,10 +13,6 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    config = os.path.join(
-        get_package_share_directory("mavros_odom_relay"), "config", "params.yaml"
-    )
-
     declare_robot_namespace = DeclareLaunchArgument(
         "robot_namespace",
         default_value="robot",
@@ -66,7 +59,7 @@ def generate_launch_description():
         name="mavros_odom_relay",
         namespace=ns,
         output="screen",
-        parameters=[config, overrides],
+        parameters=[overrides],
     )
 
     return LaunchDescription(args + [node])

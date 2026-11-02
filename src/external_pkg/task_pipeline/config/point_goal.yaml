@@ -1,0 +1,21 @@
+# 单点导航任务。coordinate_frame 选择下面 gps / enu 中实际下发的一组坐标。
+coordinate_frame: enu # 可选: gps | enu
+
+robot_namespace: robot_1
+wait_timeout_s: 10.0
+
+task:
+  mission_id: point_goal_demo
+  agent_id: robot_1
+  primitive_id: point_goal_001
+  capability_id: goto_waypoints
+  params:
+    waypoints:
+      - gps:
+          lat: 40.9446353
+          lon: 113.172819
+          alt: 1298.7345711102703
+        enu:
+          x: 0.0       # east, m
+          y: 1.1      # north, m
+          z: 0.0       # up from enu_origin, m

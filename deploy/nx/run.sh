@@ -37,10 +37,10 @@ if [[ "$mode" == hil ]]; then
  if [[ -n "${HIL_ROBOT_NAMESPACE:-}" ]]; then
   hil_args+=("robot_namespace:=$HIL_ROBOT_NAMESPACE")
  fi
- exec bash "$ws/launch_hil.sh" "${hil_args[@]}" "$@"
+ exec bash "$ws/deploy/hil/launch.sh" "${hil_args[@]}" "$@"
 fi
-case "$mode" in check|nav|tasks) source "$here/env.sh";;
- *) echo 'Usage: bash deploy/nx/run.sh [check|nav|tasks|hil] [key:=value ...]'; exit 2;;
+case "$mode" in check|nav) source "$here/env.sh";;
+ *) echo 'Usage: bash deploy/nx/run.sh [check|nav|hil] [key:=value ...]'; exit 2;;
 esac
 case "$mode" in
  check)
@@ -48,13 +48,7 @@ case "$mode" in
   timeout 12 ros2 topic echo /lf/sportmodestate unitree_go/msg/SportModeState --once --qos-reliability best_effort
   ;;
  nav)
-  exec ros2 launch robot_launch outdoor_all_go2w.launch.py \
+  exec ros2 launch robot_launch real.launch.py \
     robot_namespace:="$ROBOT_NAMESPACE" fcu_url:="$FCU_URL" use_foxglove:=false "$@"
-  ;;
- tasks)
-  # Direct original launches avoid setup_go2w.sh's old ~/ww hardcoded path.
-  exec ros2 launch robot_launch task_pipeline.launch.py \
-    robot_namespace:="$ROBOT_NAMESPACE" usv_sn:="$ROBOT_NAMESPACE" prefix:='' \
-    drone_name:="$ROBOT_NAMESPACE" mqtt:=false "$@"
   ;;
 esac

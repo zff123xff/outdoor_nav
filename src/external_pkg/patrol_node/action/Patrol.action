@@ -1,6 +1,7 @@
 # Ping-pong patrol along the line segment between two GPS points.
 #
-# The robot travels start_point -> end_point -> start_point -> end_point ...
+# The robot first approaches the nearest endpoint, then traverses the segment
+# to the opposite endpoint and returns to the selected initial endpoint.
 # and keeps walking the segment back and forth until the goal is canceled
 # or max_laps round trips have been completed.
 #
@@ -17,7 +18,7 @@ string capability_id                     # 基元能力 ID，默认 "patrol_line
 string primitive_id                      # 本基元实例 ID，同一任务内唯一
 
 # --- 巡线段：两个端点 ---
-sensor_msgs/NavSatFix start_point        # A 端：巡线线段的一个端点（先到这边）
+sensor_msgs/NavSatFix start_point        # A 端：巡线线段的一个端点；自动选择较近的一端先到达
 sensor_msgs/NavSatFix end_point          # B 端：巡线线段的另一个端点
 
 # --- 过渡参数：给下一个基元留出平滑接管窗口 ---
@@ -33,13 +34,13 @@ string mission_id                        # 回显任务标识
 string capability_id                     # 回显基元能力 ID
 string primitive_id                      # 回显基元实例 ID
 uint32 reached_points                    # 累计到达的点数（每到达一个端点 +1）
-uint32 laps                              # 完成的完整往返趟数（A→B→A 为 1 趟）
+uint32 laps                              # 完成的完整往返趟数（近端→远端→近端 为 1 趟）
 geometry_msgs/PoseStamped final_pose     # 基元结束时机器人的位姿（交接给下一个基元）
 ---
 # Feedback: published while the patrol is running.
 uint32 reached_points                    # 累计到达的点数
 uint32 laps                              # 完成的完整往返趟数
-string phase                             # to_start / to_end：当前正在驶向哪个端点
+string phase                             # to_start / to_end / holding / completed
 string primitive_id                      # 回显基元实例 ID
 float64 distance_to_target_m             # 距当前目标点的水平距离（米）
 float64 segment_length_m                 # 巡线线段总长度（米）

@@ -1,7 +1,5 @@
 nav2_input_bridge:
   ros__parameters:
-    use_sim_time: false
-
     # Topic names are RELATIVE on purpose: ROS 2 resolves them against the
     # node namespace, so "/robot_a/mavros/odom" works when the node runs in
     # /robot_a. An absolute name would ignore the namespace.
@@ -30,4 +28,6 @@ nav2_input_bridge:
     goal_output_frame: "map"
 
     require_nav_sat_fix: true
+    # true: determine yaw from the robot's current TF position to each GPS goal.
+    # Requires a fresh goal_output_frame -> robot_base_frame transform.
     goal_yaw_from_bearing: false

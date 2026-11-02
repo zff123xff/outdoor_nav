@@ -1,0 +1,18 @@
+# A single GPS destination executed by point_goal_node.
+string mission_id
+string agent_id
+string capability_id
+string primitive_id
+sensor_msgs/NavSatFix target
+---
+bool success
+string message
+string mission_id
+string capability_id
+string primitive_id
+geometry_msgs/PoseStamped final_pose
+---
+string phase
+float64 distance_to_target_m
+bool reached
+string primitive_id

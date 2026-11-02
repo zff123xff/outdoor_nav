@@ -85,7 +85,8 @@ public:
     double raytrace_max_range, double raytrace_min_range, tf2_ros::Buffer & tf2_buffer,
     std::string global_frame,
     std::string sensor_frame,
-    tf2::Duration tf_tolerance);
+    tf2::Duration tf_tolerance,
+    std::string height_reference_frame = "", double height_reference_ground_z = 0.0);
 
   /**
    * @brief  Destructor... cleans up
@@ -146,6 +147,8 @@ private:
   rclcpp::Time last_updated_;
   std::string global_frame_;
   std::string sensor_frame_;
+  std::string height_reference_frame_;
+  double height_reference_ground_z_;
   std::list<Observation> observation_list_;
   std::string topic_name_;
   double min_obstacle_height_, max_obstacle_height_;

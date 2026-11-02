@@ -14,7 +14,9 @@
 
 """Unit tests for the ping-pong waypoint queue."""
 
-from patrol_node.waypoints import GeoPoint, PingPongQueue
+import pytest
+
+from patrol_node.waypoints import GeoPoint, PingPongQueue, nearest_endpoint
 
 
 def _points():
@@ -60,3 +62,25 @@ def test_clear_drops_pending_targets():
     queue.take_next()
     queue.clear()
     assert len(queue) == 0
+
+
+@pytest.mark.parametrize('robot_xy,expected', [((0, 1), 0), ((0, 9), 1),
+                                             ((0, 5), 0), ((0, 10), 1)])
+def test_nearest_endpoint_uses_current_horizontal_position(robot_xy, expected):
+    assert nearest_endpoint(robot_xy, (0, 0), (0, 10)) == expected
+
+
+def test_round_trip_from_b_returns_to_b():
+    a, b = _points()
+    queue = PingPongQueue(a, b, start_at_b=True)
+    targets = []
+    for _ in range(3):
+        target = queue.take_next()
+        targets.append(target)
+        queue.on_reached(target)
+    assert targets == [b, a, b]
+
+
+def test_invalid_position_is_not_used_to_choose_an_endpoint():
+    with pytest.raises(ValueError, match='finite'):
+        nearest_endpoint((float('nan'), 0), (0, 0), (0, 10))

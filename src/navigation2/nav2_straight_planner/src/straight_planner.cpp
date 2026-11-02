@@ -1,199 +1,159 @@
 // Copyright 2026
-
 #include "nav2_straight_planner/straight_planner.hpp"
-
 #include <cmath>
-
+#include <algorithm>
 #include "lifecycle_msgs/msg/state.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/time.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
-
 namespace nav2_straight_planner
 {
-
 StraightPlanner::StraightPlanner(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("straight_planner", "", options)
 {
   declare_parameter("global_frame", std::string("map"));
   declare_parameter("robot_base_frame", std::string("base_link"));
   declare_parameter("path_step_m", 0.1);
-  declare_parameter("goal_xy_tolerance", 0.3);
-  declare_parameter("planning_period_s", 1.0);
+  declare_parameter("planning_period_s", 0.5);
   declare_parameter("controller_id", std::string("FollowPath"));
   declare_parameter("goal_checker_id", std::string("general_goal_checker"));
-  // Relative name so the action resolves to /{robot_namespace}/follow_path,
-  // matching controller_server's default action name inside the same namespace.
   declare_parameter("follow_path_action", std::string("follow_path"));
 }
-
-nav2_util::CallbackReturn
-StraightPlanner::on_configure(const rclcpp_lifecycle::State & /*state*/)
+nav2_util::CallbackReturn StraightPlanner::on_configure(const rclcpp_lifecycle::State &)
 {
   get_parameter("global_frame", global_frame_);
   get_parameter("robot_base_frame", robot_frame_);
   get_parameter("path_step_m", path_step_m_);
-  get_parameter("goal_xy_tolerance", goal_xy_tolerance_);
   get_parameter("planning_period_s", planning_period_s_);
   get_parameter("controller_id", controller_id_);
   get_parameter("goal_checker_id", goal_checker_id_);
   get_parameter("follow_path_action", action_name_);
-
-  reentrant_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  if (!std::isfinite(path_step_m_) || path_step_m_ <= 0 || !std::isfinite(planning_period_s_) || planning_period_s_ <= 0) {
+    RCLCPP_ERROR(get_logger(), "Path step and planning period must be positive and finite");
+    return nav2_util::CallbackReturn::FAILURE;
+  }
+  if (!reentrant_group_) {
+    reentrant_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  }
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-  goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-    "goal_pose", rclcpp::QoS(10),
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, false);
+  action_client_ = rclcpp_action::create_client<FollowPath>(this, action_name_, reentrant_group_);
+  goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>("goal_pose", 10,
     std::bind(&StraightPlanner::onGoal, this, std::placeholders::_1));
-
-  stop_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "stop_planner", rclcpp::QoS(10),
+  stop_sub_ = create_subscription<std_msgs::msg::Bool>("stop_planner", 10,
     std::bind(&StraightPlanner::onStop, this, std::placeholders::_1));
-
-  action_client_ = rclcpp_action::create_client<FollowPath>(
-    this, action_name_, reentrant_group_);
-
-  timer_ = create_wall_timer(
-    std::chrono::duration<double>(planning_period_s_),
-    std::bind(&StraightPlanner::onPlanTick, this),
-    reentrant_group_);
+  area_search_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "area_search/active", rclcpp::QoS(1).reliable().transient_local(),
+    [this](std_msgs::msg::Bool::SharedPtr msg) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      area_search_heartbeat_ = std::chrono::steady_clock::now();
+      if (msg->data && !area_search_active_) {cancelFollowPath(); finishGoal(false);}
+      area_search_active_ = msg->data;
+    });
+  navigation_server_ = rclcpp_action::create_server<Navigate>(
+    this, "navigate_to_pose",
+    [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const Navigate::Goal> goal) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      const auto & p = goal->pose.pose;
+      if (!isActive() || area_search_active_ || navigation_goal_ || navigation_goal_pending_ ||
+        !goal->behavior_tree.empty() || goal->pose.header.frame_id.empty() ||
+        !std::isfinite(p.position.x) || !std::isfinite(p.position.y) || !std::isfinite(p.position.z) ||
+        !std::isfinite(p.orientation.x) || !std::isfinite(p.orientation.y) ||
+        !std::isfinite(p.orientation.z) || !std::isfinite(p.orientation.w) ||
+        std::abs(p.orientation.x*p.orientation.x + p.orientation.y*p.orientation.y +
+        p.orientation.z*p.orientation.z + p.orientation.w*p.orientation.w - 1.0) > 0.01) {
+        return rclcpp_action::GoalResponse::REJECT;
+      }
+      navigation_goal_pending_ = true;
+      return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    },
+    [this](std::shared_ptr<NavigationHandle> handle) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (navigation_goal_ != handle) {return rclcpp_action::CancelResponse::REJECT;}
+      cancelFollowPath();
+      return rclcpp_action::CancelResponse::ACCEPT;
+    },
+    [this](std::shared_ptr<NavigationHandle> handle) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      navigation_goal_pending_ = false;
+      cancelFollowPath();
+      navigation_goal_ = handle;
+      if (!isActive() || area_search_active_) {finishGoal(false); return;}
+      latest_goal_ = handle->get_goal()->pose;
+      goal_valid_ = true;
+      stop_requested_ = false;
+    });
+  timer_ = create_wall_timer(std::chrono::duration<double>(planning_period_s_),
+    std::bind(&StraightPlanner::onPlanTick, this), reentrant_group_);
   timer_->cancel();
-
-  RCLCPP_INFO(
-    get_logger(),
-    "Configured: map=%s base=%s action=%s period=%.2fs step=%.3fm",
-    global_frame_.c_str(), robot_frame_.c_str(), action_name_.c_str(),
-    planning_period_s_, path_step_m_);
-
   return nav2_util::CallbackReturn::SUCCESS;
 }
-
-nav2_util::CallbackReturn
-StraightPlanner::on_activate(const rclcpp_lifecycle::State & /*state*/)
+void StraightPlanner::cancelFollowPath()
 {
-  createBond();
-  if (timer_) {
-    timer_->reset();
-  }
-  RCLCPP_INFO(get_logger(), "Activated");
-  return nav2_util::CallbackReturn::SUCCESS;
-}
-
-nav2_util::CallbackReturn
-StraightPlanner::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
-{
-  if (timer_) {
-    timer_->cancel();
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (active_goal_handle_ && action_client_) {
-      action_client_->async_cancel_goal(active_goal_handle_);
-      active_goal_handle_.reset();
-    }
-    goal_valid_ = false;
-    wait_fp_finish_after_reached_ = false;
-  }
-
-  destroyBond();
-  RCLCPP_INFO(get_logger(), "Deactivated");
-  return nav2_util::CallbackReturn::SUCCESS;
-}
-
-nav2_util::CallbackReturn
-StraightPlanner::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
-{
-  goal_sub_.reset();
-  stop_sub_.reset();
-  action_client_.reset();
-  timer_.reset();
-  tf_listener_.reset();
-  tf_buffer_.reset();
-  reentrant_group_.reset();
-
-  std::lock_guard<std::mutex> lock(state_mutex_);
+  ++generation_;
+  if (active_goal_handle_ && action_client_) {action_client_->async_cancel_goal(active_goal_handle_);}
   active_goal_handle_.reset();
-  goal_valid_ = false;
-  wait_fp_finish_after_reached_ = false;
-
-  RCLCPP_INFO(get_logger(), "Cleaned up");
-  return nav2_util::CallbackReturn::SUCCESS;
+  follow_path_pending_ = false;
 }
-
-nav2_util::CallbackReturn
-StraightPlanner::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
+void StraightPlanner::finishGoal(bool success)
 {
-  RCLCPP_INFO(get_logger(), "Shutdown");
+  ++generation_;
+  goal_valid_ = false;
+  follow_path_pending_ = false;
+  active_goal_handle_.reset();
+  if (navigation_goal_) {
+    auto result = std::make_shared<Navigate::Result>();
+    if (navigation_goal_->is_canceling()) {navigation_goal_->canceled(result);}
+    else if (success) {navigation_goal_->succeed(result);}
+    else {navigation_goal_->abort(result);}
+    navigation_goal_.reset();
+  }
+}
+nav2_util::CallbackReturn StraightPlanner::on_activate(const rclcpp_lifecycle::State &)
+{
+  createBond(); timer_->reset(); return nav2_util::CallbackReturn::SUCCESS;
+}
+nav2_util::CallbackReturn StraightPlanner::on_deactivate(const rclcpp_lifecycle::State &)
+{
+  timer_->cancel();
+  {std::lock_guard<std::mutex> lock(state_mutex_); cancelFollowPath(); finishGoal(false);}
+  destroyBond(); return nav2_util::CallbackReturn::SUCCESS;
+}
+nav2_util::CallbackReturn StraightPlanner::on_cleanup(const rclcpp_lifecycle::State &)
+{
+  {std::lock_guard<std::mutex> lock(state_mutex_); cancelFollowPath(); finishGoal(false); navigation_goal_pending_ = false;}
+  navigation_server_.reset(); goal_sub_.reset(); stop_sub_.reset(); area_search_sub_.reset();
+  timer_.reset(); action_client_.reset(); tf_listener_.reset(); tf_buffer_.reset();
   return nav2_util::CallbackReturn::SUCCESS;
 }
-
+nav2_util::CallbackReturn StraightPlanner::on_shutdown(const rclcpp_lifecycle::State &)
+{
+  if (timer_) {timer_->cancel();}
+  std::lock_guard<std::mutex> lock(state_mutex_); cancelFollowPath(); finishGoal(false);
+  return nav2_util::CallbackReturn::SUCCESS;
+}
 bool StraightPlanner::isActive()
 {
   return get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE;
 }
-
 void StraightPlanner::onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
-  if (!isActive()) {
-    RCLCPP_WARN(
-      get_logger(),
-      "Ignoring goal while not active (lifecycle state != active)");
-    return;
-  }
   std::lock_guard<std::mutex> lock(state_mutex_);
-
-  // If previously stopped by YOLO, check if this goal matches the stopped goal
-  if (goal_was_stopped_) {
-    double dx = msg->pose.position.x - stopped_goal_x_;
-    double dy = msg->pose.position.y - stopped_goal_y_;
-    double dist = std::hypot(dx, dy);
-
-    if (dist < 0.1) {
-      RCLCPP_WARN(
-        get_logger(),
-        "Rejecting goal that matches stopped goal (dist=%.3f m < 0.1 m)", dist);
-      return;  // Discard, do not update latest_goal_
-    }
-    // Different goal, clear the stopped state and allow stop to work again
-    goal_was_stopped_ = false;
-    stop_requested_ = false;
-    RCLCPP_INFO(
-      get_logger(),
-      "New goal is different from stopped goal (dist=%.3f m), accepting", dist);
-  }
-
-  wait_fp_finish_after_reached_ = false;
-  latest_goal_ = *msg;
-  goal_valid_ = true;
-  RCLCPP_INFO(
-    get_logger(), "New goal [%.3f, %.3f] frame=%s", msg->pose.position.x,
-    msg->pose.position.y, msg->header.frame_id.c_str());
-}
-
-void StraightPlanner::onStop(const std_msgs::msg::Bool::SharedPtr /*msg*/)
-{
-  std::lock_guard<std::mutex> lock(state_mutex_);
+  // An uncorrelated topic goal must not replace an Action owned by a task.
+  if (!isActive() || area_search_active_ || navigation_goal_ || navigation_goal_pending_) {return;}
   if (stop_requested_) {
-    return;
+    if (std::hypot(msg->pose.position.x-latest_goal_.pose.position.x, msg->pose.position.y-latest_goal_.pose.position.y) < 0.1) {return;}
+    stop_requested_ = false;
   }
-  stop_requested_ = true;
-  RCLCPP_WARN(get_logger(), "Stop requested! Cancelling active FollowPath and blocking new goals");
-  if (active_goal_handle_ && action_client_) {
-    action_client_->async_cancel_goal(active_goal_handle_);
-    active_goal_handle_.reset();
-  }
-  // Record the stopped goal position before invalidating
-  stopped_goal_x_ = latest_goal_.pose.position.x;
-  stopped_goal_y_ = latest_goal_.pose.position.y;
-  goal_was_stopped_ = true;
-  RCLCPP_INFO(
-    get_logger(), "Recorded stopped goal position [%.3f, %.3f]", stopped_goal_x_, stopped_goal_y_);
-  goal_valid_ = false;
-  wait_fp_finish_after_reached_ = false;
+  cancelFollowPath(); latest_goal_ = *msg; goal_valid_ = true;
 }
-
+void StraightPlanner::onStop(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg->data) {return;}
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  stop_requested_ = true;
+  cancelFollowPath(); finishGoal(false);
+}
 nav_msgs::msg::Path StraightPlanner::buildStraightPath(
   const geometry_msgs::msg::PoseStamped & start_map,
   const geometry_msgs::msg::PoseStamped & goal_map) const
@@ -240,152 +200,57 @@ nav_msgs::msg::Path StraightPlanner::buildStraightPath(
 
 void StraightPlanner::onPlanTick()
 {
-  if (!isActive()) {
+  if (!isActive()) {return;}
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (navigation_goal_ && navigation_goal_->is_canceling()) {finishGoal(false); return;}
+  if (area_search_active_) {
+    if (std::chrono::duration<double>(std::chrono::steady_clock::now()-area_search_heartbeat_).count() > 4.0 &&
+      action_client_ && action_client_->action_server_is_ready()) {
+      action_client_->async_cancel_all_goals();
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "area_search heartbeat expired; cancelling FollowPath");
+    }
     return;
   }
-
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (stop_requested_) {
-      return;
-    }
-    if (!goal_valid_) {
-      return;
-    }
-    if (wait_fp_finish_after_reached_) {
-      if (!active_goal_handle_) {
-        goal_valid_ = false;
-        wait_fp_finish_after_reached_ = false;
-        RCLCPP_WARN(
-          get_logger(),
-          "Wait FollowPath finish but no active goal; clearing state");
-      }
-      return;
-    }
-  }
-
-  if (!action_client_->action_server_is_ready()) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 5000,
-      "FollowPath action not ready: %s", action_name_.c_str());
-    return;
-  }
-
-  geometry_msgs::msg::PoseStamped robot_map;
+  if (!goal_valid_ || stop_requested_ || !action_client_->action_server_is_ready()) {return;}
+  geometry_msgs::msg::PoseStamped robot, goal = latest_goal_;
   try {
-    const auto tf = tf_buffer_->lookupTransform(
-      global_frame_, robot_frame_, tf2::TimePointZero);
-    robot_map.header.frame_id = global_frame_;
-    robot_map.header.stamp = tf.header.stamp;
-    robot_map.pose.position.x = tf.transform.translation.x;
-    robot_map.pose.position.y = tf.transform.translation.y;
-    robot_map.pose.position.z = tf.transform.translation.z;
-    robot_map.pose.orientation = tf.transform.rotation;
+    auto tf = tf_buffer_->lookupTransform(global_frame_, robot_frame_, tf2::TimePointZero);
+    robot.header.frame_id = global_frame_; robot.header.stamp = tf.header.stamp;
+    robot.pose.position.x = tf.transform.translation.x; robot.pose.position.y = tf.transform.translation.y;
+    robot.pose.position.z = tf.transform.translation.z; robot.pose.orientation = tf.transform.rotation;
+    if (goal.header.frame_id != global_frame_) {goal = tf_buffer_->transform(goal, global_frame_, tf2::durationFromSec(0.2));}
   } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "TF robot: %s", ex.what());
-    return;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Navigation TF unavailable: %s", ex.what()); return;
   }
-
-  geometry_msgs::msg::PoseStamped goal_copy;
-  {
+  if (navigation_goal_) {
+    auto feedback = std::make_shared<Navigate::Feedback>();
+    feedback->current_pose = robot;
+    feedback->distance_remaining = std::hypot(goal.pose.position.x-robot.pose.position.x, goal.pose.position.y-robot.pose.position.y);
+    navigation_goal_->publish_feedback(feedback);
+  }
+  if (follow_path_pending_) {return;}
+  FollowPath::Goal request;
+  request.path = buildStraightPath(robot, goal);
+  request.controller_id = controller_id_; request.goal_checker_id = goal_checker_id_;
+  follow_path_pending_ = true;
+  const auto generation = generation_;
+  rclcpp_action::Client<FollowPath>::SendGoalOptions options;
+  options.goal_response_callback = [this, generation](GoalHandleFollowPath::SharedPtr handle) {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    goal_copy = latest_goal_;
-  }
-  geometry_msgs::msg::PoseStamped goal_map = goal_copy;
-  if (goal_map.header.frame_id != global_frame_) {
-    try {
-      goal_map = tf_buffer_->transform(goal_copy, global_frame_, tf2::durationFromSec(0.2));
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "TF goal: %s", ex.what());
-      return;
+    if (generation != generation_ || !goal_valid_) {
+      if (handle) {action_client_->async_cancel_goal(handle);} return;
     }
-  }
-
-  const double rx = robot_map.pose.position.x;
-  const double ry = robot_map.pose.position.y;
-  const double gx = goal_map.pose.position.x;
-  const double gy = goal_map.pose.position.y;
-  const double dist = std::hypot(gx - rx, gy - ry);
-
-  FollowPath::Goal goal_msg;
-  GoalHandleFollowPath::SharedPtr cancel_handle;
-  bool send_new_goal = false;
-
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!goal_valid_ || wait_fp_finish_after_reached_) {
-      return;
-    }
-
-    if (dist < goal_xy_tolerance_) {
-      if (!active_goal_handle_) {
-        goal_valid_ = false;
-        RCLCPP_INFO(
-          get_logger(), "Goal reached (dist=%.3f m), no active FollowPath; done", dist);
-        return;
-      }
-      wait_fp_finish_after_reached_ = true;
-      RCLCPP_INFO(
-        get_logger(),
-        "Planner reached goal (dist=%.3f m); waiting current FollowPath to finish (no cancel)",
-        dist);
-      return;
-    }
-
-    if (active_goal_handle_) {
-      cancel_handle = active_goal_handle_;
-      active_goal_handle_.reset();
-    }
-
-    nav_msgs::msg::Path path = buildStraightPath(robot_map, goal_map);
-    goal_msg.path = path;
-    goal_msg.controller_id = controller_id_;
-    goal_msg.goal_checker_id = goal_checker_id_;
-    send_new_goal = true;
-  }
-
-  if (cancel_handle) {
-    action_client_->async_cancel_goal(cancel_handle);
-  }
-
-  if (!send_new_goal) {
-    return;
-  }
-
-  rclcpp_action::Client<FollowPath>::SendGoalOptions opts;
-  opts.goal_response_callback =
-    [this](GoalHandleFollowPath::SharedPtr handle) {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      if (!handle) {
-        RCLCPP_WARN(get_logger(), "FollowPath goal rejected");
-        return;
-      }
-      active_goal_handle_ = handle;
-    };
-  opts.result_callback = [this](const GoalHandleFollowPath::WrappedResult & result) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (active_goal_handle_ && active_goal_handle_->get_goal_id() == result.goal_id) {
-      active_goal_handle_.reset();
-    }
-    if (wait_fp_finish_after_reached_) {
-      goal_valid_ = false;
-      wait_fp_finish_after_reached_ = false;
-      RCLCPP_INFO(
-        get_logger(),
-        "FollowPath ended after planner-reached (code=%d); stop sending new goals",
-        static_cast<int>(result.code));
-      return;
-    }
-    if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
-      RCLCPP_DEBUG(
-        get_logger(), "FollowPath finished with code %d", static_cast<int>(result.code));
-    }
+    if (!handle) {RCLCPP_ERROR(get_logger(), "FollowPath rejected"); finishGoal(false); return;}
+    active_goal_handle_ = handle;
   };
-
-  action_client_->async_send_goal(goal_msg, opts);
-  RCLCPP_DEBUG(
-    get_logger(), "Sent FollowPath: poses=%zu dist~=%.2f m", goal_msg.path.poses.size(),
-    dist);
+  options.result_callback = [this, generation](const GoalHandleFollowPath::WrappedResult & result) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (generation != generation_ || !goal_valid_) {return;}
+    // The controller's Action result is the only authority for arrival.
+    const bool success = result.code == rclcpp_action::ResultCode::SUCCEEDED;
+    RCLCPP_INFO(get_logger(), "Navigation completed from FollowPath result: %d", static_cast<int>(result.code));
+    finishGoal(success);
+  };
+  action_client_->async_send_goal(request, options);
 }
-
 }  // namespace nav2_straight_planner

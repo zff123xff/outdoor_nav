@@ -71,7 +71,7 @@ nano deploy/nx/config.env
 | ROS domain | 同文件 ROS_DOMAIN_ID | 与狗固件/实际部署一致，模板 0 需核对；不要沿用仿真的 30 |
 | PX4 串口 | 同文件 FCU_URL | 推荐 `/dev/serial/by-id/实际设备:波特率`，必须与飞控配置一致 |
 | GPS 参考原点 | `src/robot_launch/config/go2w_nav2.yaml` 中 reference_latitude/longitude/altitude | 实际场地经纬度和海拔；不要照搬仿真参考点 |
-| 雷达安装外参 | `src/robot_launch/launch/go2w_nav2.launch.py` 的 static_tf_base_lidar | 实测安装平移与姿态 |
+| 雷达安装外参 | `src/robot_launch/config/go2w_nav2.yaml` 的 `lidar_mount` | 实测安装平移与姿态 |
 | 雷达/主机 IP | `nx_deps/livox_ws/src/livox_ros_driver2/config/MID360_config.json` | lidar_configs 的雷达 IP 与 host_net_info 的板端接收 IP |
 
 狗网络通常使用 `192.168.123.0/24`，Unitree 官方示例主机地址为 `192.168.123.99/24`。
@@ -115,8 +115,8 @@ bash deploy/nx/run.sh nav
 ```
 
 **这条命令会启动真机执行器驱动；当前 go2w_driver 启动约 2 秒后会发送 BalanceStand 请求。**
-它同时启动 MAVROS、MID360、定位中继、导航、twist_mux 和遥控转换，默认不启动 Foxglove。
-需要远程查看时可加 `use_foxglove:=true`。不要同时运行原 launch_all_go2w.sh，以免重复节点。
+它同时启动 MAVROS、MID360、定位中继、导航、twist_mux、遥控转换和 task_pipeline，默认不启动 Foxglove。
+需要远程查看时可加 `use_foxglove:=true`。不要另启导航栈或 task_pipeline。
 
 另开终端检查真实传感器与导航就绪：
 
@@ -137,25 +137,20 @@ PX4 需要实际传感器、GPS、EKF 配置和有效原点，安装 ROS 不会�
 此项目依赖 PX4/MAVROS 定位，不是只接机器狗自身 IMU 就能直接导航。
 若出现生命周期启动超时，需排查并记录；仿真专用的生命周期 relay/watchdog 没有随本部署迁移。
 
-## 6. 任务服务及 MQTT
+## 6. 任务和 MQTT
 
-仅启动原任务服务和 GPS 队列（不会自动发送任务）：
+`nav` 模式已经启动 pipeline 服务、定点/巡线 Action 执行器和 GPS waypoint 适配器。另一个终端可使用项目内任务 YAML 下发：
 
 ```bash
-cd ~/outdoor_nav
-bash deploy/nx/run.sh tasks
+ros2 run task_pipeline send_point_goal --check
+ros2 run task_pipeline send_point_goal
+ros2 run task_pipeline send_patrol --check
+ros2 run task_pipeline send_patrol
 ```
 
-通过 `/agent/robot_a/execute_task` 接收 ExecuteTask 请求。修改命名空间时同步修改 JSON agent_id。
-队列原点默认从原项目默认参数读取，必须确认与导航原点一致；新任务追加，不会覆盖旧队列。
-需要只改原点或核对完整参数时使用 `ros2 launch ... --show-args`，不要把仿真测试 YAML 的远距离坐标直接用于真机。
+ENU 任务的坐标原点从运行中的 `/<namespace>/nav2_input_bridge` 读取，任务 YAML 不重复保存原点。修改命名空间时，客户端通过 `--namespace` 指定接收者。
 
-本部署会编译原 MQTT 后台 `backend_nodes`，但不自动启用 `mqtt:=true`：
-原 `backend_nodes_launcher` 不只启动 MQTT，还启动 ProductGateway 和额外 MAVLink UDP/串口接口；
-`multi_task_bridge` 还保留模拟 FCU 状态定时器。启用前应明确实际 broker、vehicle_id、
-额外 MAVLink 接口用途，并处理模拟状态发布，不能把它当成真实 FCU 状态。
-仿真里验证的 MQTT 协议可以复用，但该薄入口尚未作为独立真机部署组件迁移，
-所以本脚本不宣称真机 MQTT 端到端已部署完成。不要将仿真整体加载到真机运行。
+MQTT 可通过主入口的 `mqtt:=true` 启用；首次使用前确认 broker、vehicle_id 和后台附带的网关/串口接口参数均已配置。否则保持默认关闭。
 
 ## 7. 停止与验证边界
 

@@ -5,20 +5,15 @@
 <package format="3">
   <name>multi_goal_to_gp_goal</name>
   <version>0.1.0</version>
-  <description>
-    Bridge msg_set_msgs/MultiGoal (from execute_task_server on /waypoint_goals)
-    to sensor_msgs/NavSatFix (on /gp_goal for nav2_input_bridge).
-
-    Subscribes to /waypoint_goals, forwards the first GPS waypoint to /gp_goal
-    so that the existing nav2_input_bridge -> straight_planner -> controller_server
-    pipeline accepts it. Local-frame waypoints (is_gps_aid=false) are skipped
-    with a warning since they cannot be expressed as a NavSatFix.
-  </description>
+  <description>Sequential GPS waypoint dispatcher using navigation Action results.</description>
   <maintainer email="dev@example.com">dev</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>nav2_msgs</depend>
+  <depend>action_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>msg_set_msgs</depend>
 
   <exec_depend>python3</exec_depend>

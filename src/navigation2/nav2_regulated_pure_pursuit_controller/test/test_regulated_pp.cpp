@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <math.h>
 #include <memory>
 #include <string>
@@ -432,7 +433,7 @@ TEST(RegulatedPurePursuitTest, rotateTests)
 
   carrot.pose.position.x = 0.0;
   carrot.pose.position.y = 0.26;
-  EXPECT_EQ(ctrl->shouldRotateToGoalHeadingWrapper(carrot), false);
+  EXPECT_EQ(ctrl->shouldRotateToGoalHeadingWrapper(carrot), true);  // XY arrival is latched.
 
   // rotateToHeading
   double lin_v = 10.0;
@@ -466,6 +467,17 @@ TEST(RegulatedPurePursuitTest, rotateTests)
   curr_speed.angular.z = 1.0;
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
   EXPECT_NEAR(ang_v, 0.84, 0.01);
+
+  // Equivalent headings outside [-pi, pi] must take the shortest turn.
+  curr_speed.angular.z = 0.0;
+  const double pi = std::acos(-1.0);
+  angle_to_path = 2.0 * pi - 0.2;
+  ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
+  EXPECT_LT(ang_v, 0.0);
+
+  angle_to_path = -2.0 * pi + 0.2;
+  ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
+  EXPECT_GT(ang_v, 0.0);
 }
 
 TEST(RegulatedPurePursuitTest, applyConstraints)
@@ -722,6 +734,70 @@ protected:
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   rclcpp::Time transform_time_;
 };
+
+class HeadingGoalChecker : public nav2_core::GoalChecker
+{
+public:
+  void initialize(
+    const rclcpp_lifecycle::LifecycleNode::WeakPtr &, const std::string &,
+    const std::shared_ptr<nav2_costmap_2d::Costmap2DROS>) override {}
+  void reset() override {}
+  bool isGoalReached(
+    const geometry_msgs::msg::Pose &, const geometry_msgs::msg::Pose &,
+    const geometry_msgs::msg::Twist &) override {return false;}
+  bool getTolerances(
+    geometry_msgs::msg::Pose & pose, geometry_msgs::msg::Twist &) override
+  {
+    pose.position.x = 0.5;
+    return true;
+  }
+};
+
+TEST_F(TransformGlobalPlanTest, nearby_carrot_does_not_trigger_final_goal_rotation)
+{
+  configure_costmap(10u, 0.1);
+  node_->declare_parameter("test_rpp.lookahead_dist", 0.1);
+  node_->declare_parameter("test_rpp.use_collision_detection", false);
+  configure_controller(100.0);
+  ctrl_->activate();
+  auto * map = costmap_->getCostmap();
+  map->resetMap(0, 0, map->getSizeInCellsX(), map->getSizeInCellsY());
+
+  const auto stamp = node_->get_clock()->now();
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = PATH_FRAME;
+  transform.header.stamp = stamp;
+  transform.child_frame_id = ROBOT_FRAME;
+  transform.transform.translation.x = 0.05;
+  transform.transform.translation.y = 0.05;
+  transform.transform.rotation.w = 1.0;
+  tf_buffer_->setTransform(transform, "test", true);
+  tf_buffer_->setUsingDedicatedThread(true);
+
+  nav_msgs::msg::Path path;
+  path.header.frame_id = PATH_FRAME;
+  path.header.stamp = stamp;
+  for (int i = 0; i <= 50; ++i) {
+    geometry_msgs::msg::PoseStamped point;
+    point.header = path.header;
+    point.pose.position.x = 0.05 + i * 0.1;
+    point.pose.position.y = 0.05;
+    point.pose.orientation.w = 1.0;
+    path.poses.push_back(point);
+  }
+  // A distant final goal requests a different heading, but a nearby carrot
+  // must still produce forward tracking instead of an in-place final turn.
+  path.poses.back().pose.orientation.z = std::sin(0.5);
+  path.poses.back().pose.orientation.w = std::cos(0.5);
+  ctrl_->setPlan(path);
+  geometry_msgs::msg::PoseStamped robot = path.poses.front();
+  HeadingGoalChecker checker;
+  auto command = ctrl_->computeVelocityCommands(robot, geometry_msgs::msg::Twist(), &checker);
+  EXPECT_GT(command.twist.linear.x, 0.0);
+  EXPECT_NEAR(command.twist.angular.z, 0.0, 1e-6);
+  ctrl_->deactivate();
+  ctrl_->cleanup();
+}
 
 // This tests that not only should nothing get pruned on a costmap
 // that contains the entire global_plan, and also that it doesn't skip to the end of the path

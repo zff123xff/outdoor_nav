@@ -13,3 +13,5 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 colcon build --symlink-install --packages-skip fast_lio go2w_driver --cmake-args \
   -DROS_EDITION=ROS2 -DDISTRO_ROS="${ROS_DISTRO:-humble}" \
   -DBUILD_TESTING=OFF "$@"
+
+source ./install/setup.sh

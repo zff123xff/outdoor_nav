@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "tf2/LinearMath/Quaternion.h"
+#include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #include <rclcpp/qos.hpp>
@@ -146,6 +147,18 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
 
   stop_planner_pub_ = create_publisher<std_msgs::msg::Bool>("stop_planner", 10);
 
+  // Presence only: publish immediately and every wall-clock second even before
+  // odometry/controller activation. Consumers must expire stale heartbeats.
+  nav_run_pub_ = create_publisher<std_msgs::msg::Bool>(
+    "nav_run", rclcpp::QoS(1).reliable().transient_local());
+  auto publish_nav_run = [this]() {
+      std_msgs::msg::Bool msg;
+      msg.data = true;
+      nav_run_pub_->publish(msg);
+    };
+  publish_nav_run();
+  nav_run_timer_ = create_wall_timer(std::chrono::seconds(1), publish_nav_run);
+
   follow_path_action_client_ = rclcpp_action::create_client<FollowPath>(
     this,
     follow_path_action_topic_);
@@ -168,6 +181,9 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
     (ns.empty() || ns == "/") ? "" : ns.substr(1);  // strip leading '/'
   tf_frame_id_ = prefix.empty() ? "odom" : prefix + "/odom";
   tf_child_frame_id_ = prefix.empty() ? "base_link" : prefix + "/base_link";
+  robot_base_frame_ = declare_parameter("robot_base_frame", tf_child_frame_id_);
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+  tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, this, false);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   start_ns_ = steadyNowNs();
@@ -262,8 +278,8 @@ void InputBridgeNode::onOdom(
   t.child_frame_id = tf_child_frame_id_;
   t.transform.translation.x = msg->pose.pose.position.x;
   t.transform.translation.y = msg->pose.pose.position.y;
-  // t.transform.translation.z = msg->pose.pose.position.z;
-  t.transform.translation.z = 0.0;
+   t.transform.translation.z = msg->pose.pose.position.z;
+  //t.transform.translation.z = 0.0;
   t.transform.rotation = msg->pose.pose.orientation;
   tf_broadcaster_->sendTransform(t);
 }
@@ -479,7 +495,29 @@ void InputBridgeNode::processGoalFix(
   out.pose.position.z = up;
 
   if (goal_yaw_from_bearing_) {
-    const double yaw = std::atan2(east, north);
+    // Resolve the robot in the SAME frame as the projected goal. Odometry
+    // coordinates alone are insufficient when map -> odom is nonidentity.
+    geometry_msgs::msg::TransformStamped robot;
+    try {
+      robot = tf_buffer_->lookupTransform(
+        goal_output_frame_, robot_base_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(get_logger(), "Cannot determine goal heading; goal rejected: %s", ex.what());
+      return;
+    }
+    const rclcpp::Time pose_stamp(robot.header.stamp, get_clock()->get_clock_type());
+    if (pose_stamp.nanoseconds() != 0 &&
+      std::abs((now() - pose_stamp).seconds()) > odom_timeout_s_)
+    {
+      RCLCPP_WARN(get_logger(), "Cannot determine goal heading from stale TF; goal rejected");
+      return;
+    }
+    const double dx = east - robot.transform.translation.x;
+    const double dy = north - robot.transform.translation.y;
+    // ROS ENU yaw: zero along +X/east, positive toward +Y/north.
+    // A coincident target has no bearing; keep the current heading.
+    const double yaw = std::hypot(dx, dy) > 1e-6 ?
+      std::atan2(dy, dx) : tf2::getYaw(robot.transform.rotation);
     tf2::Quaternion q;
     q.setRPY(0.0, 0.0, yaw);
     out.pose.orientation = tf2::toMsg(q);

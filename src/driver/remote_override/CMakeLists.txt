@@ -24,7 +24,6 @@ install(TARGETS remote_override_node
 
 install(DIRECTORY
   launch
-  config
   DESTINATION share/${PROJECT_NAME}/
 )
 

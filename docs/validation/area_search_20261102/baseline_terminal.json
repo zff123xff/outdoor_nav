@@ -1,0 +1,21 @@
+{
+  "wall": 1793556906.4149015,
+  "state": "cancelled",
+  "reason": "operator cancellation",
+  "robot_namespace": "robot_1",
+  "mission_id": "area_opt_baseline",
+  "team": [
+    "robot_1"
+  ],
+  "searched_area_m2": 92.14000000000001,
+  "assigned_area_m2": 100.00000000000001,
+  "observed_ratio": 0.9214,
+  "frontier_clusters": 7,
+  "assigned_region": {
+    "east": 10.0,
+    "north": 0.0,
+    "length": 10.0,
+    "width": 10.0,
+    "yaw": 0.0
+  }
+}

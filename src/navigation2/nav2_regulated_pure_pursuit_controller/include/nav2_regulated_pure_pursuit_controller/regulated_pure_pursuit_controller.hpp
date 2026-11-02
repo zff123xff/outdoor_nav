@@ -112,6 +112,7 @@ public:
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
 
 protected:
+  bool prefer_supplied_path_{true};
   /**
    * @brief Transforms global plan into same frame as pose and clips poses ineligible for lookaheadPoint
    * Points ineligible to be selected as a lookahead point if they are any of the following:
@@ -163,7 +164,7 @@ protected:
    * @param carrot_pose current lookahead point
    * @return Whether should rotate to goal heading
    */
-  bool shouldRotateToGoalHeading(const geometry_msgs::msg::PoseStamped & carrot_pose);
+  bool shouldRotateToGoalHeading(const geometry_msgs::msg::PoseStamped & goal_pose);
 
   /**
    * @brief Create a smooth and kinematically smoothed rotation command
@@ -313,11 +314,34 @@ protected:
   double regulated_linear_scaling_min_speed_;
   bool use_rotate_to_heading_;
   double max_angular_accel_;
+  bool use_backup_recovery_{true};
+  double backup_recovery_trigger_cost_{200.0};
+  double backup_recovery_distance_{0.5};
+  double backup_recovery_speed_{0.1};
+  bool backup_active_{false};
+  bool backup_exhausted_{false};
+  double backup_start_x_{0.0}, backup_start_y_{0.0}, backup_target_distance_{0.0};
+  rclcpp::Time backup_started_{0, 0, RCL_ROS_TIME};
+  bool computeBackupCommand(
+    const geometry_msgs::msg::PoseStamped & pose, double & linear, double & angular);
+  bool backupPathIsSafe(const geometry_msgs::msg::PoseStamped & pose, double distance);
+  virtual bool isBackupPoseSafe(double x, double y, double yaw);
   double rotate_to_heading_min_angle_;
+  double rotate_to_heading_hysteresis_{0.2617993877991494};
+  double rotate_to_heading_direction_lock_angle_{0.17453292519943295};
+  bool rotating_to_path_{false};
+  double rotation_direction_{0.0};
   double goal_dist_tol_;
   bool allow_reversing_;
   double max_robot_pose_search_dist_;
   bool use_interpolation_;
+  bool stateful_{true};
+  bool reached_xy_tolerance_{false};
+  std::string last_heading_mode_{"idle"};
+  double rotation_command_{0.0};
+  double rotation_accel_gain_{2.0}, rotation_damping_gain_{2.5};
+  double tracking_angular_vel_limit_{1.2};
+  bool use_rotate_to_goal_heading_{true};
 
   nav_msgs::msg::Path global_plan_;
   nav_msgs::msg::Path local_plan_;

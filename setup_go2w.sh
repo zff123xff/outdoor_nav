@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Go2W DDS environment setup for NX
-# Source this before running launch_go2w.sh or launch_all_go2w.sh
+# Sourced by launch_real.sh for the physical Go2-W startup.
 
 set -eo pipefail
 
@@ -8,8 +8,8 @@ if [ -z "${ROS_DISTRO}" ]; then
     source /opt/ros/humble/setup.bash
 fi
 
-# Unitree ROS2 cyclonedds workspace (contains unitree_api messages)
-source "${HOME}/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash"
+# Unitree messages, MAVROS, MID360 driver, SDK and geoid data under ~/ww/3rd.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup_hardware.sh"
 
 # CycloneDDS configuration
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

@@ -14,53 +14,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Ping-pong patrol along the line segment between two GPS points.
-
-The node exposes a ROS 2 action (``patrol_node/action/Patrol``) whose goal
-carries the two GPS endpoints of the patrol line.  On acceptance the node
-fills a waypoint queue with ``[A, B]`` and dispatches the head of that queue
-to ``gp_goal`` (sensor_msgs/NavSatFix), which the existing
-
-    nav2_input_bridge -> straight_planner -> controller_server
-
-pipeline turns into a nav2 goal.
-
-Arrival is detected from the odom position the same way
-``multi_goal_to_gp_goal`` does it: the odom position is compared against the
-ENU projection of the current target and the target counts as reached after
-``consecutive_required`` consecutive samples within ``reach_threshold_m``.
-Whenever a point is reached it is pushed back onto the tail of the queue, so
-the queue always holds exactly one pending target and the dispatched targets
-alternate ``A, B, A, B ...`` -- the robot walks the segment back and forth
-until the action goal is canceled or ``max_laps`` round trips are done.
-
-The projection (``lla_to_enu``) and the arrival-detection parameters are
-shared with ``multi_goal_to_gp_goal`` so that the ENU frame used for the
-arrival check is exactly the one ``nav2_input_bridge`` publishes the goal in.
-
-This is a *primitive*: the goal carries the identity of the task
-(``mission_id`` / ``agent_id`` / ``capability_id`` / ``primitive_id``) and the
-handover state (``current_pose``), and the result reports where the robot
-ended up (``final_pose``), so a task dispatcher can compose it with other
-primitives and hand the robot over without a hard stop.
-"""
+"""GPS ping-pong patrol: advance endpoints only on successful navigation Action results."""
 
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from multi_goal_to_gp_goal.multi_goal_to_gp_goal import lla_to_enu
 from nav_msgs.msg import Odometry
 from patrol_node.action import Patrol
-from patrol_node.waypoints import GeoPoint, PingPongQueue
+from patrol_node.waypoints import GeoPoint, PingPongQueue, nearest_endpoint
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from rclpy.task import Future
-from sensor_msgs.msg import NavSatFix
-from std_msgs.msg import Bool
+from rclpy.time import Time
+from action_msgs.msg import GoalStatus
+from multi_goal_to_gp_goal.navigation_client import NavigationClient
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class PatrolNode(Node):
@@ -71,14 +44,11 @@ class PatrolNode(Node):
 
         # --- topics -------------------------------------------------------
         self.declare_parameter('action_name', 'patrol')
-        self.declare_parameter('goal_output_topic', 'gp_goal')
         self.declare_parameter('odom_topic', 'odom')
-        self.declare_parameter('stop_topic', 'stop_planner')
         self.declare_parameter('frame_id', 'gps')
+        self.declare_parameter('global_frame', 'map')
+        self.declare_parameter('robot_base_frame', 'base_link')
 
-        # NavSatStatus values published with every goal fix.
-        self.declare_parameter('navsat_status', 1)   # NavSatStatus.STATUS_FIX
-        self.declare_parameter('navsat_service', 1)  # NavSatStatus.SERVICE_GPS
 
         # ENU origin used for the arrival check. Must match nav2_input_bridge,
         # otherwise the arrival check compares against a different frame.
@@ -87,22 +57,25 @@ class PatrolNode(Node):
         self.declare_parameter('reference_altitude', 0.0)
 
         # Arrival detection (same defaults as multi_goal_to_gp_goal).
-        self.declare_parameter('reach_threshold_m', 0.5)
-        self.declare_parameter('consecutive_required', 5)
-        self.declare_parameter('check_period_s', 0.1)
         self.declare_parameter('feedback_period_s', 0.5)
 
         # --- io -----------------------------------------------------------
-        self._gp_pub = self.create_publisher(
-            NavSatFix, self.get_parameter('goal_output_topic').value, 10)
-        self._stop_pub = self.create_publisher(
-            Bool, self.get_parameter('stop_topic').value, 10)
+        self._navigation = NavigationClient(self)
 
         # odom QoS: best-effort compatible with /mavros/local_position/odom;
         # mavros_odom_relay republishes it as RELIABLE, so we still get data.
         odom_qos = QoSProfile(depth=10, reliability=qos_profile_sensor_data.reliability)
         self._odom_sub = self.create_subscription(
             Odometry, self.get_parameter('odom_topic').value, self._on_odom, odom_qos)
+        namespace = self.get_namespace().strip('/')
+        self._global_frame = self._resolve_frame(
+            self.get_parameter('global_frame').value, namespace)
+        self._robot_base_frame = self._resolve_frame(
+            self.get_parameter('robot_base_frame').value, namespace)
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._last_odom_received_monotonic = None
+        self._last_tf_warning_monotonic = 0.0
 
         # --- action -------------------------------------------------------
         self._action_server = ActionServer(
@@ -125,7 +98,7 @@ class PatrolNode(Node):
         self._target_enu = None
         self._latest_pose = None      # (east, north) in the odom frame
         self._latest_pose_stamped = None
-        self._consecutive_within = 0
+        self._latest_global_yaw = None
         self._reached_points = 0
         self._segment_length_m = 0.0
         self._leg = 0                 # 0: heading to start_point, 1: to end_point
@@ -142,15 +115,9 @@ class PatrolNode(Node):
         self._keep_moving_on_end = False
 
         self._timer = self.create_timer(
-            self.get_parameter('check_period_s').value, self._on_tick)
+            self.get_parameter('feedback_period_s').value, self._on_tick)
 
-        self.get_logger().info(
-            f'patrol_node: action={self.get_parameter("action_name").value} '
-            f'gp_goal={self._gp_pub.topic_name} '
-            f'odom={self._odom_sub.topic_name} '
-            f'(reach<{self.get_parameter("reach_threshold_m").value:.2f}m '
-            f'x{self.get_parameter("consecutive_required").value})'
-        )
+        self.get_logger().info('Patrol completion follows navigate_to_pose Action results')
 
     # ----- action callbacks -------------------------------------------------
 
@@ -167,12 +134,20 @@ class PatrolNode(Node):
                 'cannot run a patrol. Set them in the nav2 params yaml.')
             return GoalResponse.REJECT
 
+        if self._robot_position_in_global_frame() is None:
+            self.get_logger().error(
+                'Fresh odometry and map -> base_link TF are required '
+                'to select the nearest patrol endpoint.')
+            return GoalResponse.REJECT
+
         self._end_reason = None
+        self._active = True
         return GoalResponse.ACCEPT
 
     def _on_cancel(self, goal_handle):
         """Handle a cancel request: stop the patrol loop."""
         self.get_logger().info('Patrol cancel requested.')
+        self._navigation.cancel()
         self._end_reason = 'canceled'
         self._resolve_end()
         return CancelResponse.ACCEPT
@@ -192,18 +167,23 @@ class PatrolNode(Node):
         point_b = GeoPoint(request.end_point.latitude,
                            request.end_point.longitude,
                            request.end_point.altitude)
+        robot_xy = self._robot_position_in_global_frame()
+        lat0, lon0, alt0 = self._origin()
+        endpoint_xy = [lla_to_enu(point.latitude, point.longitude, point.altitude,
+                                 lat0, lon0, alt0)[:2] for point in (point_a, point_b)]
+        first_leg = nearest_endpoint(robot_xy, *endpoint_xy) if robot_xy is not None else 0
 
         self._goal_handle = goal_handle
         self._end_future = Future()
-        self._queue = PingPongQueue(point_a, point_b)
+        self._queue = PingPongQueue(point_a, point_b, start_at_b=first_leg == 1)
         self._target = None
         self._target_enu = None
-        self._consecutive_within = 0
         self._reached_points = 0
-        self._leg = 0
+        self._leg = first_leg
         self._holding = False
         self._hold_until_ns = 0
         self._segment_length_m = self._distance_between(point_a, point_b)
+        self._last_feedback_ns = 0
 
         # --- per-goal parameters ---
         self._mission_id = request.mission_id
@@ -213,12 +193,6 @@ class PatrolNode(Node):
         self._hold_ns = int(max(0.0, request.hold_time_at_endpoint_s) * 1e9)
         self._keep_moving_on_end = bool(request.keep_moving_on_end)
 
-        # Seed the pose from the handover pose so the arrival check works even
-        # before the first odom message arrives.
-        if self._latest_pose is None and request.current_pose is not None:
-            self._latest_pose = (request.current_pose.pose.position.x,
-                                 request.current_pose.pose.position.y)
-
         self._active = True
         self.get_logger().info(
             f'Starting patrol [{self._primitive_id or "-"}] '
@@ -226,11 +200,19 @@ class PatrolNode(Node):
             f'start=({point_a.latitude:.7f}, {point_a.longitude:.7f}) '
             f'end=({point_b.latitude:.7f}, {point_b.longitude:.7f}) '
             f'segment={self._segment_length_m:.2f}m '
+            f'nearest_endpoint={"unavailable" if robot_xy is None else ("B" if first_leg else "A")} '
             f'max_laps={self._max_laps or "inf"} '
             f'hold={request.hold_time_at_endpoint_s:.1f}s'
         )
 
-        self._dispatch_next()
+        if goal_handle.is_cancel_requested:
+            self._end_reason = 'canceled'
+            self._resolve_end()
+        elif robot_xy is None:
+            self._end_reason = 'localization_unavailable'
+            self._resolve_end()
+        else:
+            self._dispatch_next()
 
         try:
             await self._end_future
@@ -257,6 +239,10 @@ class PatrolNode(Node):
             result.message = (
                 f'patrol {self._end_reason or "stopped"}: '
                 f'{self._reached_points} arrival(s), {result.laps} lap(s)')
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+            else:
+                goal_handle.abort()
         self.get_logger().info(result.message)
         return result
 
@@ -280,6 +266,39 @@ class PatrolNode(Node):
             self.get_parameter('reference_altitude').value,
         )
 
+    @staticmethod
+    def _resolve_frame(frame: str, namespace: str) -> str:
+        """Qualify an unprefixed TF frame with this robot's namespace."""
+        frame = frame.strip('/')
+        if namespace and frame != namespace and not frame.startswith(namespace + '/'):
+            return f'{namespace}/{frame}'
+        return frame
+
+    def _robot_position_in_global_frame(self):
+        """Return fresh robot XY in the same map frame as projected GPS goals."""
+        if (self._last_odom_received_monotonic is None or
+                time.monotonic() - self._last_odom_received_monotonic > 2.0):
+            return None
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                self._global_frame, self._robot_base_frame, Time())
+        except TransformException as exc:
+            now = time.monotonic()
+            if now - self._last_tf_warning_monotonic >= 3.0:
+                self.get_logger().warning(
+                    f'Waiting for robot TF {self._global_frame} -> '
+                    f'{self._robot_base_frame}: {exc}')
+                self._last_tf_warning_monotonic = now
+            return None
+        age = (self.get_clock().now() - Time.from_msg(transform.header.stamp)).nanoseconds * 1e-9
+        robot_xy = (transform.transform.translation.x, transform.transform.translation.y)
+        if age < -0.5 or age > 2.0 or not all(math.isfinite(value) for value in robot_xy):
+            return None
+        q = transform.transform.rotation
+        self._latest_global_yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return robot_xy
+
     def _distance_between(self, point_a: GeoPoint, point_b: GeoPoint) -> float:
         """Horizontal distance between two GPS points, in the ENU frame."""
         lat0, lon0, alt0 = self._origin()
@@ -290,7 +309,7 @@ class PatrolNode(Node):
         return math.hypot(east_b - east_a, north_b - north_a)
 
     def _laps(self) -> int:
-        """Return the number of completed round trips (A->B->A is one lap)."""
+        """Count round trips from the selected nearest endpoint (A-B-A or B-A-B)."""
         return max(0, (self._reached_points - 1) // 2)
 
     def _final_pose(self) -> PoseStamped:
@@ -305,10 +324,16 @@ class PatrolNode(Node):
     # ----- queue -----------------------------------------------------------
 
     def _dispatch_next(self):
-        """Publish the next target of the queue to /gp_goal."""
+        """Send one correlated navigation Action for the next GPS endpoint."""
         if len(self._queue) == 0:
             self._target = None
             self._target_enu = None
+            return
+
+        robot_xy = self._robot_position_in_global_frame()
+        if robot_xy is None:
+            self._end_reason = 'localization_unavailable'
+            self._resolve_end()
             return
 
         point = self._queue.take_next()
@@ -318,18 +343,11 @@ class PatrolNode(Node):
 
         self._target = point
         self._target_enu = (east, north, up)
-        self._consecutive_within = 0
 
-        fix = NavSatFix()
-        fix.header.stamp = self.get_clock().now().to_msg()
-        fix.header.frame_id = self.get_parameter('frame_id').value
-        fix.latitude = point.latitude
-        fix.longitude = point.longitude
-        fix.altitude = point.altitude
-        fix.status.status = self.get_parameter('navsat_status').value
-        fix.status.service = self.get_parameter('navsat_service').value
-
-        self._gp_pub.publish(fix)
+        dx, dy = east - robot_xy[0], north - robot_xy[1]
+        heading = (math.atan2(dy, dx) if math.hypot(dx, dy) > 1e-6
+                   else self._latest_global_yaw)
+        self._navigation.send(self._target_enu, self._navigation_done, heading=heading)
         self.get_logger().info(
             f"Patrol target {'A' if self._leg == 0 else 'B'}: "
             f'lat={point.latitude:.7f}, lon={point.longitude:.7f}, '
@@ -344,7 +362,6 @@ class PatrolNode(Node):
         # next target is the other end of the segment.
         self._queue.on_reached(reached)
         self._leg = 1 - self._leg
-        self._consecutive_within = 0
         self.get_logger().info(
             f'Reached target ({self._reached_points} arrival(s), '
             f'{self._laps()} lap(s)); heading to the other end.')
@@ -368,7 +385,7 @@ class PatrolNode(Node):
     # ----- callbacks -------------------------------------------------------
 
     def _on_odom(self, msg: Odometry) -> None:
-        # odom is in the ENU (local) frame
+        # Keep odom for handover feedback; arrival uses TF in the Nav2 map frame.
         self._latest_pose = (
             msg.pose.pose.position.x,
             msg.pose.pose.position.y,
@@ -377,49 +394,34 @@ class PatrolNode(Node):
         pose.header = msg.header
         pose.pose = msg.pose.pose
         self._latest_pose_stamped = pose
+        self._last_odom_received_monotonic = time.monotonic()
+
+    def _navigation_done(self, status):
+        if not self._active or self._end_reason is not None:
+            return
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self._on_reached()
+        else:
+            self._end_reason = ('navigation_canceled' if status == GoalStatus.STATUS_CANCELED else 'navigation_failed')
+            self._resolve_end()
 
     def _on_tick(self):
-        """Arrival detection, dispatched at ``check_period_s``."""
         if not self._active:
             return
-
-        now_ns = self.get_clock().now().nanoseconds
-
-        if self._holding:
-            # Dwell at the endpoint: no arrival check until the hold expires.
-            if now_ns >= self._hold_until_ns:
-                self._holding = False
-                self._dispatch_next()
-            self._publish_feedback(self._distance_to_target())
-            return
-
-        if self._target_enu is None or self._latest_pose is None:
-            return
-
-        goal_east, goal_north, _ = self._target_enu
-        pose_east, pose_north = self._latest_pose
-        distance = math.hypot(pose_east - goal_east, pose_north - goal_north)
-
-        threshold = self.get_parameter('reach_threshold_m').value
-        required = self.get_parameter('consecutive_required').value
-
-        if distance <= threshold:
-            self._consecutive_within += 1
-        else:
-            self._consecutive_within = 0
-
-        if self._consecutive_within >= required:
-            self._on_reached()
-            distance = self._distance_to_target()
-
-        self._publish_feedback(distance)
+        if self._holding and self.get_clock().now().nanoseconds >= self._hold_until_ns:
+            self._holding = False
+            self._dispatch_next()
+        self._publish_feedback(self._distance_to_target())
 
     def _distance_to_target(self) -> float:
         """Horizontal distance between the robot and the current target."""
-        if self._target_enu is None or self._latest_pose is None:
-            return 0.0
+        if self._target_enu is None:
+            return float('inf')
+        robot_xy = self._robot_position_in_global_frame()
+        if robot_xy is None:
+            return float('inf')
         goal_east, goal_north, _ = self._target_enu
-        pose_east, pose_north = self._latest_pose
+        pose_east, pose_north = robot_xy
         return math.hypot(pose_east - goal_east, pose_north - goal_north)
 
     def _publish_feedback(self, distance: float) -> None:
@@ -432,7 +434,12 @@ class PatrolNode(Node):
         feedback = Patrol.Feedback()
         feedback.reached_points = self._reached_points
         feedback.laps = self._laps()
-        feedback.phase = 'to_start' if self._leg == 0 else 'to_end'
+        if self._end_reason == 'completed':
+            feedback.phase = 'completed'
+        elif self._holding:
+            feedback.phase = 'holding'
+        else:
+            feedback.phase = 'to_start' if self._leg == 0 else 'to_end'
         feedback.primitive_id = self._primitive_id
         feedback.distance_to_target_m = distance
         feedback.segment_length_m = self._segment_length_m
@@ -440,25 +447,7 @@ class PatrolNode(Node):
             self._goal_handle.publish_feedback(feedback)
 
     def _stop_robot(self):
-        """Stop the patrol and, if configured, stop the robot as well."""
-        self._queue.clear()
-        self._target = None
-        self._target_enu = None
-        self._consecutive_within = 0
-        self._holding = False
-
-        if self._keep_moving_on_end:
-            self.get_logger().info(
-                'Patrol ended; keep_moving_on_end is set, so the robot keeps '
-                'its last navigation goal for the next primitive to take over.')
-            return
-
-        stop = Bool()
-        stop.data = True
-        self._stop_pub.publish(stop)
-        self.get_logger().info(
-            f'Patrol ended; requested an immediate stop on '
-            f'{self._stop_pub.topic_name}.')
+        self._navigation.cancel()
 
 
 def main(args=None) -> None:

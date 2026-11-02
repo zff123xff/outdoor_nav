@@ -20,6 +20,15 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>std_msgs</depend>
 
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>execute_task_server</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>tf2_msgs</test_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

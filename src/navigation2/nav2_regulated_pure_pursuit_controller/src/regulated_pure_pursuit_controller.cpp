@@ -38,6 +38,18 @@ using rcl_interfaces::msg::ParameterType;
 namespace nav2_regulated_pure_pursuit_controller
 {
 
+namespace
+{
+const char * motionModeLabel(const std::string & mode)
+{
+  if (mode == "backup") {return "后退";}
+  if (mode == "rotate_path") {return "掉头（对齐路径）";}
+  if (mode == "rotate_goal") {return "掉头（对齐目标朝向）";}
+  if (mode == "tracking") {return "跟踪";}
+  return "待命";
+}
+}  // namespace
+
 void RegulatedPurePursuitController::configure(
   const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
   std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
@@ -62,6 +74,9 @@ void RegulatedPurePursuitController::configure(
 
   double transform_tolerance = 0.1;
   double control_frequency = 20.0;
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".prefer_supplied_path", rclcpp::ParameterValue(true));
+  node->get_parameter(plugin_name_ + ".prefer_supplied_path", prefer_supplied_path_);
   goal_dist_tol_ = 0.25;  // reasonable default before first update
 
   declare_parameter_if_not_declared(
@@ -110,7 +125,22 @@ void RegulatedPurePursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_rotate_to_heading", rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_backup_recovery", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".backup_recovery_trigger_cost", rclcpp::ParameterValue(200.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".backup_recovery_distance", rclcpp::ParameterValue(0.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".backup_recovery_speed", rclcpp::ParameterValue(0.1));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stateful", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".rotate_to_heading_min_angle", rclcpp::ParameterValue(0.785));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".rotate_to_heading_hysteresis", rclcpp::ParameterValue(0.2617993877991494));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".rotate_to_heading_direction_lock_angle",
+    rclcpp::ParameterValue(0.17453292519943295));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_angular_accel", rclcpp::ParameterValue(3.2));
   declare_parameter_if_not_declared(
@@ -170,7 +200,47 @@ void RegulatedPurePursuitController::configure(
     plugin_name_ + ".regulated_linear_scaling_min_speed",
     regulated_linear_scaling_min_speed_);
   node->get_parameter(plugin_name_ + ".use_rotate_to_heading", use_rotate_to_heading_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".rotation_accel_gain", rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(node, plugin_name_ + ".rotation_damping_gain", rclcpp::ParameterValue(2.5));
+  node->get_parameter(plugin_name_ + ".rotation_accel_gain", rotation_accel_gain_);
+  node->get_parameter(plugin_name_ + ".rotation_damping_gain", rotation_damping_gain_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".tracking_angular_vel_limit", rclcpp::ParameterValue(1.2));
+  declare_parameter_if_not_declared(node, plugin_name_ + ".use_rotate_to_goal_heading", rclcpp::ParameterValue(true));
+  node->get_parameter(plugin_name_ + ".tracking_angular_vel_limit", tracking_angular_vel_limit_);
+  node->get_parameter(plugin_name_ + ".use_rotate_to_goal_heading", use_rotate_to_goal_heading_);
+  if (!std::isfinite(rotation_accel_gain_) || rotation_accel_gain_ <= 0.0 ||
+    !std::isfinite(rotation_damping_gain_) || rotation_damping_gain_ < 0.0 ||
+    !std::isfinite(tracking_angular_vel_limit_) || tracking_angular_vel_limit_ <= 0.0)
+  {
+    throw std::invalid_argument("Invalid heading acceleration or damping gain");
+  }
+  node->get_parameter(plugin_name_ + ".use_backup_recovery", use_backup_recovery_);
+  node->get_parameter(plugin_name_ + ".backup_recovery_trigger_cost", backup_recovery_trigger_cost_);
+  node->get_parameter(plugin_name_ + ".backup_recovery_distance", backup_recovery_distance_);
+  node->get_parameter(plugin_name_ + ".backup_recovery_speed", backup_recovery_speed_);
+  if (!std::isfinite(backup_recovery_trigger_cost_) || backup_recovery_trigger_cost_ <= 0.0 ||
+    backup_recovery_trigger_cost_ >= INSCRIBED_INFLATED_OBSTACLE ||
+    !std::isfinite(backup_recovery_distance_) || backup_recovery_distance_ <= 0.0 ||
+    !std::isfinite(backup_recovery_speed_) || backup_recovery_speed_ <= 0.0)
+  {
+    throw std::invalid_argument("Invalid backup recovery cost, distance or speed");
+  }
+  node->get_parameter(plugin_name_ + ".stateful", stateful_);
+  reached_xy_tolerance_ = false;
+  rotating_to_path_ = false;
+  rotation_direction_ = 0.0;
+  backup_active_ = false;
+  backup_exhausted_ = false;
   node->get_parameter(plugin_name_ + ".rotate_to_heading_min_angle", rotate_to_heading_min_angle_);
+  node->get_parameter(plugin_name_ + ".rotate_to_heading_hysteresis", rotate_to_heading_hysteresis_);
+  node->get_parameter(
+    plugin_name_ + ".rotate_to_heading_direction_lock_angle", rotate_to_heading_direction_lock_angle_);
+  if (!std::isfinite(rotate_to_heading_hysteresis_) || rotate_to_heading_hysteresis_ < 0.0 ||
+    !std::isfinite(rotate_to_heading_direction_lock_angle_) ||
+    rotate_to_heading_direction_lock_angle_ < 0.0 || rotate_to_heading_direction_lock_angle_ >= M_PI_2)
+  {
+    throw std::invalid_argument("Heading hysteresis must be nonnegative; direction lock angle must be in [0, pi/2)");
+  }
   node->get_parameter(plugin_name_ + ".max_angular_accel", max_angular_accel_);
   node->get_parameter(plugin_name_ + ".allow_reversing", allow_reversing_);
   node->get_parameter("controller_frequency", control_frequency);
@@ -225,6 +295,13 @@ void RegulatedPurePursuitController::cleanup()
 
 void RegulatedPurePursuitController::activate()
 {
+  last_heading_mode_ = "idle";
+  rotation_command_ = 0.0;
+  reached_xy_tolerance_ = false;
+  rotating_to_path_ = false;
+  rotation_direction_ = 0.0;
+  backup_active_ = false;
+  backup_exhausted_ = false;
   RCLCPP_INFO(
     logger_,
     "Activating controller: %s of type "
@@ -298,6 +375,25 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     goal_dist_tol_ = pose_tolerance.position.x;
   }
 
+  double backup_linear = 0.0, backup_angular = 0.0;
+  if (computeBackupCommand(pose, backup_linear, backup_angular)) {
+    if (use_collision_detection_ && isCollisionImminent(
+        pose, backup_linear, backup_angular, backup_recovery_distance_))
+    {
+      throw nav2_core::PlannerException("Backup recovery collision check blocked motion");
+    }
+    if (last_heading_mode_ != "backup") {
+      RCLCPP_INFO(
+        logger_, "控制模式: %s -> 后退 heading_mode: %s -> backup command_vx=%.4f",
+        motionModeLabel(last_heading_mode_), last_heading_mode_.c_str(), backup_linear);
+      last_heading_mode_ = "backup";
+    }
+    geometry_msgs::msg::TwistStamped command;
+    command.header = pose.header;
+    command.twist.linear.x = backup_linear;
+    return command;
+  }
+
   // get local plan
   local_plan_ = getLocalPlan(pose);
   
@@ -345,18 +441,42 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
 
   // Make sure we're in compliance with basic constraints
   double angle_to_heading;
-  if (shouldRotateToGoalHeading(carrot_pose)) {
-    double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
+  // The carrot and the end of a local detour are not necessarily the mission
+  // goal. Only the actual final goal may trigger final-heading alignment.
+  geometry_msgs::msg::PoseStamped final_goal = global_plan_.poses.back();
+  final_goal.header = global_plan_.header;
+  final_goal.header.stamp = pose.header.stamp;
+  geometry_msgs::msg::PoseStamped final_goal_in_base;
+  if (!transformPose(costmap_ros_->getBaseFrameID(), final_goal, final_goal_in_base)) {
+    throw nav2_core::PlannerException("Unable to transform final goal into robot frame");
+  }
+  const double goal_distance = std::hypot(
+    final_goal_in_base.pose.position.x, final_goal_in_base.pose.position.y);
+  const double angle_to_goal = tf2::getYaw(final_goal_in_base.pose.orientation);
+  const double path_heading_error = std::atan2(
+    carrot_pose.pose.position.y, carrot_pose.pose.position.x);
+  const char * heading_mode;
+  if (shouldRotateToGoalHeading(final_goal_in_base)) {
+    heading_mode = "rotate_goal";
+    rotating_to_path_ = false;
+    if (last_heading_mode_ != heading_mode) {rotation_direction_ = 0.0; rotation_command_ = 0.0;}
     rotateToHeading(linear_vel, angular_vel, angle_to_goal, speed);
   } else if (shouldRotateToPath(carrot_pose, angle_to_heading)) {
+    heading_mode = "rotate_path";
+    if (last_heading_mode_ != heading_mode) {rotation_direction_ = 0.0; rotation_command_ = 0.0;}
     rotateToHeading(linear_vel, angular_vel, angle_to_heading, speed);
   } else {
+    heading_mode = "tracking";
+    rotation_command_ = 0.0;
     applyConstraints(
       curvature, speed,
       costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
       linear_vel, sign);
 
     // Apply curvature to angular velocity after constraining linear velocity
+    if (std::abs(curvature) > 1e-6) {
+      linear_vel = std::min(linear_vel, tracking_angular_vel_limit_ / std::abs(curvature));
+    }
     angular_vel = linear_vel * curvature;
   }
 
@@ -364,6 +484,18 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
     throw nav2_core::PlannerException("RegulatedPurePursuitController detected collision ahead!");
+  }
+
+  if (last_heading_mode_ != heading_mode) {
+    RCLCPP_INFO(
+      logger_,
+      "控制模式: %s -> %s heading_mode: %s -> %s goal_distance=%.4f carrot_distance=%.4f "
+      "path_error=%.6f goal_error=%.6f command_vx=%.4f command_wz=%.4f",
+      motionModeLabel(last_heading_mode_), motionModeLabel(heading_mode),
+      last_heading_mode_.c_str(), heading_mode, goal_distance,
+      std::hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y),
+      path_heading_error, angle_to_goal, linear_vel, angular_vel);
+    last_heading_mode_ = heading_mode;
   }
 
   // populate and return message
@@ -374,41 +506,158 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   return cmd_vel;
 }
 
+bool RegulatedPurePursuitController::isBackupPoseSafe(double x, double y, double yaw)
+{
+  const double cost = collision_checker_->footprintCostAtPose(
+    x, y, yaw, costmap_ros_->getRobotFootprint());
+  // Recovery requires observed clearance for the whole footprint, including
+  // the current pose; do not waive collisions to escape a lethal cell.
+  return cost >= 0.0 && cost < INSCRIBED_INFLATED_OBSTACLE;
+}
+
+bool RegulatedPurePursuitController::backupPathIsSafe(
+  const geometry_msgs::msg::PoseStamped & pose, double distance)
+{
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  const int steps = std::max(1, static_cast<int>(std::ceil(distance/(costmap_->getResolution()/2))));
+  for (int i = 0; i <= steps; ++i) {
+    const double offset = distance*i/steps;
+    const double x = pose.pose.position.x-offset*std::cos(yaw);
+    const double y = pose.pose.position.y-offset*std::sin(yaw);
+    unsigned int mx, my;
+    if (!costmap_->worldToMap(x, y, mx, my) ||
+      costmap_->getCost(mx, my) >= INSCRIBED_INFLATED_OBSTACLE ||
+      !isBackupPoseSafe(x, y, yaw)) {return false;}
+  }
+  return true;
+}
+
+bool RegulatedPurePursuitController::computeBackupCommand(
+  const geometry_msgs::msg::PoseStamped & pose, double & linear, double & angular)
+{
+  if (!use_backup_recovery_) {return false;}
+  unsigned int mx, my;
+  if (!costmap_->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my)) {
+    throw nav2_core::PlannerException("Robot is outside local costmap");
+  }
+  const double cost = costmap_->getCost(mx, my);
+  double travelled = std::hypot(
+    pose.pose.position.x-backup_start_x_, pose.pose.position.y-backup_start_y_);
+  if (backup_active_ && (cost < backup_recovery_trigger_cost_ ||
+    travelled >= backup_target_distance_))
+  {
+    backup_active_ = false;
+    backup_exhausted_ = true;
+    rotating_to_path_ = false;
+    rotation_direction_ = 0.0;
+    if (cost >= backup_recovery_trigger_cost_) {
+      throw nav2_core::PlannerException("Backup distance exhausted without leaving high-cost space");
+    }
+    return false;
+  }
+  if (!backup_active_) {
+    if (cost < backup_recovery_trigger_cost_ || backup_exhausted_) {return false;}
+    const double yaw = tf2::getYaw(pose.pose.orientation);
+    bool found = false;
+    for (double distance = costmap_->getResolution()/2;
+      distance <= backup_recovery_distance_+1e-9; distance += costmap_->getResolution()/2)
+    {
+      const double x = pose.pose.position.x-distance*std::cos(yaw);
+      const double y = pose.pose.position.y-distance*std::sin(yaw);
+      unsigned int rx, ry;
+      if (!costmap_->worldToMap(x, y, rx, ry)) {break;}
+      if (costmap_->getCost(rx, ry) < backup_recovery_trigger_cost_ &&
+        backupPathIsSafe(pose, distance))
+      {
+        backup_target_distance_ = distance;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      throw nav2_core::PlannerException("High-cost start: no collision-free reverse escape within backup distance");
+    }
+    backup_start_x_ = pose.pose.position.x;
+    backup_start_y_ = pose.pose.position.y;
+    backup_started_ = clock_->now();
+    travelled = 0.0;
+    backup_active_ = true;
+  }
+  const double remaining = std::max(0.0, backup_target_distance_-travelled);
+  if ((clock_->now()-backup_started_).seconds() > backup_recovery_distance_/backup_recovery_speed_+2.0 ||
+    !backupPathIsSafe(pose, remaining))
+  {
+    throw nav2_core::PlannerException("Backup recovery timed out or reverse corridor became blocked");
+  }
+  linear = -backup_recovery_speed_;
+  angular = 0.0;
+  return true;
+}
+
 bool RegulatedPurePursuitController::shouldRotateToPath(
   const geometry_msgs::msg::PoseStamped & carrot_pose, double & angle_to_path)
 {
   // Whether we should rotate robot to rough path heading
   angle_to_path = atan2(carrot_pose.pose.position.y, carrot_pose.pose.position.x);
-  return use_rotate_to_heading_ && fabs(angle_to_path) > rotate_to_heading_min_angle_;
+  const double threshold = rotating_to_path_ ?
+    std::max(0.0, rotate_to_heading_min_angle_ - rotate_to_heading_hysteresis_) :
+    rotate_to_heading_min_angle_;
+  rotating_to_path_ = use_rotate_to_heading_ && fabs(angle_to_path) > threshold;
+  if (!rotating_to_path_) {rotation_direction_ = 0.0; rotation_command_ = 0.0;}
+  return rotating_to_path_;
 }
 
 bool RegulatedPurePursuitController::shouldRotateToGoalHeading(
-  const geometry_msgs::msg::PoseStamped & carrot_pose)
+  const geometry_msgs::msg::PoseStamped & goal_pose)
 {
-  // Whether we should rotate robot to goal heading
-  double dist_to_goal = std::hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
-  return use_rotate_to_heading_ && dist_to_goal < goal_dist_tol_;
+  if (!use_rotate_to_heading_ || !use_rotate_to_goal_heading_) {
+    return false;
+  }
+  const double dist_to_goal = std::hypot(goal_pose.pose.position.x, goal_pose.pose.position.y);
+  const bool within_xy_tolerance = dist_to_goal <= goal_dist_tol_;
+  reached_xy_tolerance_ = reached_xy_tolerance_ || within_xy_tolerance;
+  // Match SimpleGoalChecker's stateful position -> heading handover. Position
+  // noise around the tolerance must not restart translation during alignment.
+  return stateful_ ? reached_xy_tolerance_ : within_xy_tolerance;
 }
 
 void RegulatedPurePursuitController::rotateToHeading(
   double & linear_vel, double & angular_vel,
   const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed)
 {
+  // Use the shortest signed angular distance. This also handles equivalent
+  // headings outside [-pi, pi] (for example, +350 degrees becomes -10).
+  const double shortest_angle = std::atan2(std::sin(angle_to_path), std::cos(angle_to_path));
+  const double shortest_sign = shortest_angle >= 0.0 ? 1.0 : -1.0;
+  // +/-pi represents the same heading. Preserve the last selected direction
+  // only in this ambiguous band; use shortest rotation again outside it.
+  const bool ambiguous = rotate_to_heading_direction_lock_angle_ > 0.0 &&
+    M_PI - std::abs(shortest_angle) <= rotate_to_heading_direction_lock_angle_;
+  if (rotation_direction_ == 0.0 || !ambiguous) {rotation_direction_ = shortest_sign;}
+  const double rotation_angle = rotation_direction_ == shortest_sign ? shortest_angle :
+    rotation_direction_ * (2.0 * M_PI - std::abs(shortest_angle));
+
   // Rotate in place using max angular velocity / acceleration possible
   linear_vel = 0.0;
-  const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
-  angular_vel = sign * rotate_to_heading_angular_vel_;
-
-  const double & dt = control_duration_;
-  const double min_feasible_angular_speed = curr_speed.angular.z - max_angular_accel_ * dt;
-  const double max_feasible_angular_speed = curr_speed.angular.z + max_angular_accel_ * dt;
-  angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
+  const double sign = rotation_direction_;
+  // Integrate bounded heading-error acceleration from the previous command.
+  // Body IMU yaw-rate contains gait impulses: re-anchoring the command to it
+  // every cycle can reverse a correctly selected turn direction.
+  (void)curr_speed;
+  const double angular_acc = std::clamp(
+    rotation_accel_gain_ * rotation_angle - rotation_damping_gain_ * rotation_command_,
+    -max_angular_accel_, max_angular_accel_);
+  angular_vel = std::clamp(
+    rotation_command_ + angular_acc * control_duration_,
+    -rotate_to_heading_angular_vel_, rotate_to_heading_angular_vel_);
 
   // Check if we need to slow down to avoid overshooting
-  double max_vel_to_stop = std::sqrt(2 * max_angular_accel_ * fabs(angle_to_path));
+  double max_vel_to_stop = std::sqrt(2 * max_angular_accel_ * fabs(rotation_angle));
   if (fabs(angular_vel) > max_vel_to_stop) {
     angular_vel = sign * max_vel_to_stop;
   }
+  rotation_command_ = angular_vel;
+
 }
 
 geometry_msgs::msg::Point RegulatedPurePursuitController::circleSegmentIntersection(
@@ -682,6 +931,13 @@ void RegulatedPurePursuitController::applyConstraints(
 void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
   global_plan_ = path;
+  rotation_command_ = 0.0;
+  // ControllerServer resets its goal checker on every setPlan as well.
+  reached_xy_tolerance_ = false;
+  rotating_to_path_ = false;
+  rotation_direction_ = 0.0;
+  backup_active_ = false;
+  backup_exhausted_ = false;
 }
 
 void RegulatedPurePursuitController::setSpeedLimit(
@@ -835,14 +1091,16 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
     return local_plan_;
   }
 
-  // double max_costmap_extent = getCostmapMaxExtent();
-  // auto transformation_end = std::find_if(
-  //   global_plan_.poses.begin(), global_plan_.poses.end(),
-  //   [&](const auto & pose) {
-  //     return euclidean_distance(pose, robot_pose) > max_costmap_extent;
-  //   });
+  // A rolling costmap eventually excludes the original start of a long leg.
+  // Prune passed points before looking for a local goal; otherwise the first
+  // out-of-map point aborts the search even when the remaining path is nearby.
+  auto closest = nav2_util::geometry_utils::min_by(
+    global_plan_.poses.begin(), global_plan_.poses.end(),
+    [&robot_pose](const auto & point) {return euclidean_distance(robot_pose, point);});
+  global_plan_.poses.erase(global_plan_.poses.begin(), closest);
 
   bool found_goal = false;
+  auto goal_end = global_plan_.poses.begin();
   geometry_msgs::msg::PoseStamped goal;
   auto it = global_plan_.poses.begin();
   for (; it != global_plan_.poses.end(); ++it)
@@ -857,6 +1115,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
     {
       goal = *it;
       found_goal = true;
+      goal_end = std::next(it);
     }
   }
 
@@ -871,8 +1130,45 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
   // else
   //   goal = *transformation_end;
   
-  planner_->setStartAndGoal(robot_pose, goal);
-  getPlan(local_plan_);
+  // Preserve the task planner's optimized guide instead of replacing every
+  // curve by a new start-to-end Theta* path. Newly blocked guides still use
+  // Theta*; all existing footprint/command collision checks remain in place.
+  bool supplied_safe = prefer_supplied_path_;
+  std::vector<coordsW> supplied{{robot_pose.pose.position.x, robot_pose.pose.position.y}};
+  unsigned int previous_x = 0, previous_y = 0;
+  bool have_previous = false;
+  for (auto point = global_plan_.poses.begin(); supplied_safe && point != goal_end; ++point) {
+    const coordsW next{point->pose.position.x, point->pose.position.y};
+    const auto previous = supplied.back();
+    const int samples = std::max(1, static_cast<int>(std::ceil(
+      std::hypot(next.x - previous.x, next.y - previous.y) / (costmap_->getResolution() * .5))));
+    for (int j = 0; j <= samples; ++j) {
+      const double t = static_cast<double>(j) / samples;
+      unsigned int x, y;
+      if (!costmap_->worldToMap(previous.x + t * (next.x - previous.x),
+        previous.y + t * (next.y - previous.y), x, y) ||
+        costmap_->getCost(x, y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+      {
+        supplied_safe = false; break;
+      }
+      if (have_previous && x != previous_x && y != previous_y &&
+        (costmap_->getCost(previous_x, y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE ||
+        costmap_->getCost(x, previous_y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
+      {
+        supplied_safe = false; break;
+      }
+      previous_x = x; previous_y = y; have_previous = true;
+    }
+    if (std::hypot(next.x - previous.x, next.y - previous.y) > 1e-9) {
+      supplied.push_back(next);
+    }
+  }
+  if (supplied_safe) {
+    local_plan_ = linearInterpolation(supplied, costmap_->getResolution());
+  } else {
+    planner_->setStartAndGoal(robot_pose, goal);
+    getPlan(local_plan_);
+  }
 
   if (local_plan_.poses.empty())
     return local_plan_;
@@ -905,9 +1201,12 @@ nav_msgs::msg::Path RegulatedPurePursuitController::linearInterpolation(
   const double & dist_bw_points)
 {
   nav_msgs::msg::Path pa;
+  if (raw_path.empty()) {
+    return pa;
+  }
 
   geometry_msgs::msg::PoseStamped p1;
-  for (unsigned int j = 0; j < raw_path.size() - 1; j++) {
+  for (size_t j = 0; j + 1 < raw_path.size(); j++) {
     coordsW pt1 = raw_path[j];
     p1.pose.position.x = pt1.x;
     p1.pose.position.y = pt1.y;
@@ -915,6 +1214,9 @@ nav_msgs::msg::Path RegulatedPurePursuitController::linearInterpolation(
 
     coordsW pt2 = raw_path[j + 1];
     double distance = std::hypot(pt2.x - pt1.x, pt2.y - pt1.y);
+    if (distance < 1e-9) {
+      continue;
+    }
     int loops = static_cast<int>(distance / dist_bw_points);
     double sin_alpha = (pt2.y - pt1.y) / distance;
     double cos_alpha = (pt2.x - pt1.x) / distance;
@@ -925,6 +1227,12 @@ nav_msgs::msg::Path RegulatedPurePursuitController::linearInterpolation(
     }
   }
 
+  // Keep a valid terminal pose even when Theta* returns a single cell. Dropping
+  // it prevents the controller from finishing the final position/yaw check.
+  p1.pose.position.x = raw_path.back().x;
+  p1.pose.position.y = raw_path.back().y;
+  pa.poses.push_back(p1);
+
   return pa;
 }
 
@@ -934,6 +1242,49 @@ RegulatedPurePursuitController::dynamicParametersCallback(
 {
   rcl_interfaces::msg::SetParametersResult result;
   std::lock_guard<std::mutex> lock_reinit(mutex_);
+
+  // Reject invalid new settings before mutating any controller state.
+  for (const auto & parameter : parameters) {
+    const auto name = parameter.get_name();
+    if (name == plugin_name_ + ".rotation_accel_gain" ||
+      name == plugin_name_ + ".rotation_damping_gain" ||
+      name == plugin_name_ + ".tracking_angular_vel_limit")
+    {
+      if (parameter.get_type() != ParameterType::PARAMETER_DOUBLE ||
+        !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0 ||
+        (name != plugin_name_ + ".rotation_damping_gain" && parameter.as_double() == 0.0))
+      {
+        result.successful = false;
+        result.reason = "Invalid heading control gain or tracking angular velocity limit";
+        return result;
+      }
+    }
+    if (name == plugin_name_ + ".backup_recovery_trigger_cost" ||
+      name == plugin_name_ + ".backup_recovery_distance" ||
+      name == plugin_name_ + ".backup_recovery_speed")
+    {
+      if (parameter.get_type() != ParameterType::PARAMETER_DOUBLE ||
+        !std::isfinite(parameter.as_double()) || parameter.as_double() <= 0.0 ||
+        (name == plugin_name_ + ".backup_recovery_trigger_cost" &&
+        parameter.as_double() >= INSCRIBED_INFLATED_OBSTACLE))
+      {
+        result.successful = false;
+        result.reason = "Invalid backup recovery parameter";
+        return result;
+      }
+    }
+    if (parameter.get_name() != plugin_name_ + ".rotate_to_heading_hysteresis" &&
+      parameter.get_name() != plugin_name_ + ".rotate_to_heading_direction_lock_angle") {continue;}
+    if (parameter.get_type() != ParameterType::PARAMETER_DOUBLE ||
+      !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0 ||
+      (parameter.get_name() == plugin_name_ + ".rotate_to_heading_direction_lock_angle" &&
+      parameter.as_double() >= M_PI_2))
+    {
+      result.successful = false;
+      result.reason = "Invalid heading hysteresis or direction lock angle";
+      return result;
+    }
+  }
 
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
@@ -978,11 +1329,43 @@ RegulatedPurePursuitController::dynamicParametersCallback(
         regulated_linear_scaling_min_speed_ = parameter.as_double();
       } else if (name == plugin_name_ + ".max_angular_accel") {
         max_angular_accel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotation_accel_gain") {
+        rotation_accel_gain_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotation_damping_gain") {
+        rotation_damping_gain_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".tracking_angular_vel_limit") {
+        tracking_angular_vel_limit_ = parameter.as_double();
       } else if (name == plugin_name_ + ".rotate_to_heading_min_angle") {
         rotate_to_heading_min_angle_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".backup_recovery_trigger_cost") {
+        backup_recovery_trigger_cost_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".backup_recovery_distance") {
+        backup_recovery_distance_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".backup_recovery_speed") {
+        backup_recovery_speed_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotate_to_heading_hysteresis") {
+        rotate_to_heading_hysteresis_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotate_to_heading_direction_lock_angle") {
+        rotate_to_heading_direction_lock_angle_ = parameter.as_double();
+        rotation_direction_ = 0.0;
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
-      if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
+      if (name == plugin_name_ + ".prefer_supplied_path") {
+        prefer_supplied_path_ = parameter.as_bool();
+      }
+      if (name == plugin_name_ + ".use_backup_recovery") {
+        use_backup_recovery_ = parameter.as_bool();
+        backup_active_ = false;
+        backup_exhausted_ = false;
+      } else if (name == plugin_name_ + ".use_rotate_to_goal_heading") {
+        use_rotate_to_goal_heading_ = parameter.as_bool();
+        reached_xy_tolerance_ = false;
+      } else if (name == plugin_name_ + ".stateful") {
+        stateful_ = parameter.as_bool();
+        reached_xy_tolerance_ = false;
+        rotating_to_path_ = false;
+        rotation_direction_ = 0.0;
+      } else if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
         use_velocity_scaled_lookahead_dist_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".use_regulated_linear_velocity_scaling") {
         use_regulated_linear_velocity_scaling_ = parameter.as_bool();
@@ -996,6 +1379,8 @@ RegulatedPurePursuitController::dynamicParametersCallback(
           continue;
         }
         use_rotate_to_heading_ = parameter.as_bool();
+        rotating_to_path_ = false;
+        rotation_direction_ = 0.0;
       } else if (name == plugin_name_ + ".allow_reversing") {
         if (use_rotate_to_heading_ && parameter.as_bool()) {
           RCLCPP_WARN(

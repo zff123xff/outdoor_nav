@@ -38,6 +38,41 @@ Visualization Manager:
       Enabled: true
       Name: TF
       Show Names: true
+    - Class: rviz_default_plugins/Polygon
+      Name: Search region
+      Enabled: true
+      Topic:
+        Value: /robot/area_search/region
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 255; 170; 0
+      Alpha: 1
+    - Class: rviz_default_plugins/Polygon
+      Name: Assigned search region
+      Enabled: true
+      Topic:
+        Value: /robot/area_search/assigned_region
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 0; 220; 150
+      Alpha: 1
+    - Class: rviz_default_plugins/Map
+      Name: Exploration map
+      Enabled: true
+      Alpha: 0.65
+      Color Scheme: map
+      Draw Behind: true
+      Topic:
+        Value: /robot/area_search/map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Use Timestamp: false
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
