@@ -17,6 +17,7 @@ find_package(sensor_msgs REQUIRED)
 # patrol_node/action/Patrol.
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/Patrol.action"
+  "action/PointGoal.action"
   DEPENDENCIES geometry_msgs sensor_msgs
 )
 
@@ -36,13 +37,13 @@ install(DIRECTORY
 # Console entry point (the ament_python console_scripts entry point).
 install(PROGRAMS
   scripts/patrol_node
+  scripts/point_goal_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# --- Launch / config / package index ----------------------------------------
+# --- Launch / package index --------------------------------------------------
 install(DIRECTORY
   launch
-  config
   DESTINATION share/${PROJECT_NAME}
 )
 

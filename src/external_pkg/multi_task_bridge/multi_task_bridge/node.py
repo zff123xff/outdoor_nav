@@ -15,6 +15,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 #0任务集结，1协同搜索，2平面任务，4返航, 6中继 ，7 线性任务, 8,抗干扰任务 ,9立体 10环绕 11，巡航, 12,起飞 
 TASK_TYPE = {
     "LINE_TASK": 7,
+    "PATROL_TASK": 11,
     "COVERAGE_TASK": 2,
     "RETURN_TASK": 4,
     "TAKEOFF_TASK": 12,
@@ -189,19 +190,45 @@ class MultiTaskBridge(Node):
             return request_json
 
         elif single_task.task_type == TASK_TYPE["LINE_TASK"]:
+            waypoints = [
+                {
+                    "lat": waypoint.x_lat,
+                    "lon": waypoint.y_long,
+                    "alt": flight_alt_m,
+                }
+                for waypoint in single_task.arrive_path.waypoints
+            ]
+            if not waypoints:
+                self.get_logger().error("LINE_TASK requires at least one GPS waypoint")
+                return None
             request_json["capability_id"] = "goto_waypoints"
             request_json["params"] = {
                 "auto_takeoff": True,
                 "takeoff_alt_m": flight_alt_m,
                 "waypoint_frame": "gps",
+                "waypoints": waypoints,
+            }
+            return request_json
+
+        elif single_task.task_type == TASK_TYPE["PATROL_TASK"]:
+            waypoints = list(single_task.arrive_path.waypoints)
+            if len(waypoints) != 2:
+                self.get_logger().error(
+                    f"PATROL_TASK requires exactly two arrive_path waypoints, got {len(waypoints)}"
+                )
+                return None
+            request_json["capability_id"] = "patrol_line"
+            request_json["primitive_id"] = single_task.task_id or "patrol_001"
+            request_json["params"] = {
+                "auto_takeoff": True,
+                "takeoff_alt_m": flight_alt_m,
+                "waypoint_frame": "gps",
                 "waypoints": [
-                    {
-                        "lat": waypoint.x_lat,
-                        "lon": waypoint.y_long,
-                        "alt": flight_alt_m
-                    }
-                    for waypoint in single_task.arrive_path.waypoints
+                    {"lat": point.x_lat, "lon": point.y_long, "alt": flight_alt_m}
+                    for point in waypoints
                 ],
+                "max_laps": 1,
+                "hold_time_at_endpoint_s": 0.0,
             }
             return request_json
 

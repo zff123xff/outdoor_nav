@@ -1,0 +1,18 @@
+{
+  "right": {
+    "status": 4,
+    "final_distance_m": 0.0957912525462748,
+    "samples": 3218,
+    "rotation_command_sign_changes": 0,
+    "max_rotation_command_rad_s": 0.4,
+    "duration_s": 15.150584686998627
+  },
+  "left": {
+    "status": 4,
+    "final_distance_m": 0.08879484032963413,
+    "samples": 2834,
+    "rotation_command_sign_changes": 0,
+    "max_rotation_command_rad_s": 0.4,
+    "duration_s": 13.050209177003126
+  }
+}

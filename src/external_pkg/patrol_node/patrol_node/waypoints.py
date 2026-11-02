@@ -22,6 +22,7 @@ source tree, without building the package first.
 
 from collections import deque
 from dataclasses import dataclass
+import math
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,17 @@ class GeoPoint:
     latitude: float
     longitude: float
     altitude: float
+
+
+def nearest_endpoint(robot_xy, endpoint_a_xy, endpoint_b_xy) -> int:
+    """Choose the closest endpoint in the common horizontal map frame; ties use A."""
+    points = (robot_xy, endpoint_a_xy, endpoint_b_xy)
+    if any(len(point) != 2 or not all(math.isfinite(value) for value in point)
+           for point in points):
+        raise ValueError('Robot and endpoint XY coordinates must be finite')
+    distance_a = math.hypot(robot_xy[0] - endpoint_a_xy[0], robot_xy[1] - endpoint_a_xy[1])
+    distance_b = math.hypot(robot_xy[0] - endpoint_b_xy[0], robot_xy[1] - endpoint_b_xy[1])
+    return 1 if distance_b < distance_a else 0
 
 
 class PingPongQueue:
@@ -43,8 +55,8 @@ class PingPongQueue:
     ``A, B, A, B ...`` and the queue never grows.
     """
 
-    def __init__(self, point_a: GeoPoint, point_b: GeoPoint) -> None:
-        self._queue: deque = deque((point_a, point_b))
+    def __init__(self, point_a: GeoPoint, point_b: GeoPoint, start_at_b=False) -> None:
+        self._queue: deque = deque((point_b, point_a) if start_at_b else (point_a, point_b))
 
     def __len__(self) -> int:
         return len(self._queue)

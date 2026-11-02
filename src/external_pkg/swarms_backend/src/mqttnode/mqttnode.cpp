@@ -197,6 +197,9 @@ void MqttNode::mqttnode_init() {
     track_img_sub_ = this->create_subscription<std_msgs::msg::UInt8MultiArray>(track_img_sub_topic_, qos_sensor,
                                                                                std::bind(&MqttNode::trackImgCallback,
                                                                                          this, _1));
+    taskFeedback_sub_ = this->create_subscription<std_msgs::msg::String>(
+            curr_drone_id_ + "/task_feedback", qos_default,
+            std::bind(&MqttNode::taskFeedbackCallback, this, _1));
     //
     //    targets_sub_ = this->create_subscription<msg_set_msgs::msg::TargetsPose>(targets_sub_topic_, qos_sensor,
     //                                                                             std::bind(&MqttNode::targetsCallback, this,
@@ -799,6 +802,27 @@ void MqttNode::taskIndexCallback(const std_msgs::msg::UInt8::SharedPtr msg) {
     }
     catch (const mqtt::exception &e) {
         RCLCPP_ERROR_STREAM(get_logger(), "Mqtt exception: " << e.what());
+    }
+}
+
+void MqttNode::taskFeedbackCallback(const std_msgs::msg::String::SharedPtr msg) {
+    if (!msg) {
+        RCLCPP_WARN_STREAM(get_logger(), "Received a null task execution feedback message.");
+        return;
+    }
+    if (!is_connected_) {
+        RCLCPP_WARN_STREAM(get_logger(), "MQTT client is not connected. Cannot publish task feedback.");
+        return;
+    }
+    try {
+        auto pubmsg = mqtt::make_message(
+                MqttTopic::mqtt_task_execution_feedback + std::to_string(vehicle_id_), msg->data);
+        pubmsg->set_qos(1);
+        client_->publish(pubmsg);
+    } catch (const std::exception &e) {
+        RCLCPP_ERROR_STREAM(get_logger(), "Error in taskFeedbackCallback: " << e.what());
+    } catch (const mqtt::exception &e) {
+        RCLCPP_ERROR_STREAM(get_logger(), "MQTT exception in taskFeedbackCallback: " << e.what());
     }
 }
 

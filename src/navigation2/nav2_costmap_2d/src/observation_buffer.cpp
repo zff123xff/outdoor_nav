@@ -58,12 +58,15 @@ ObservationBuffer::ObservationBuffer(
   double raytrace_max_range, double raytrace_min_range, tf2_ros::Buffer & tf2_buffer,
   std::string global_frame,
   std::string sensor_frame,
-  tf2::Duration tf_tolerance)
+  tf2::Duration tf_tolerance,
+  std::string height_reference_frame, double height_reference_ground_z)
 : tf2_buffer_(tf2_buffer),
   observation_keep_time_(rclcpp::Duration::from_seconds(observation_keep_time)),
   expected_update_rate_(rclcpp::Duration::from_seconds(expected_update_rate)),
   global_frame_(global_frame),
   sensor_frame_(sensor_frame),
+  height_reference_frame_(height_reference_frame),
+  height_reference_ground_z_(height_reference_ground_z),
   topic_name_(topic_name),
   min_obstacle_height_(min_obstacle_height), max_obstacle_height_(max_obstacle_height),
   obstacle_max_range_(obstacle_max_range), obstacle_min_range_(obstacle_min_range),
@@ -116,6 +119,15 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     tf2_buffer_.transform(cloud, global_frame_cloud, global_frame_, tf_tolerance_);
     global_frame_cloud.header.stamp = cloud.header.stamp;
 
+    // The body frame carries IMU-fused roll/pitch. Its XY plane approximates
+    // local terrain; filter signed height there, retain physical global XYZ.
+    sensor_msgs::msg::PointCloud2 height_cloud;
+    if (height_reference_frame_.empty() || height_reference_frame_ == global_frame_) {
+      height_cloud = global_frame_cloud;
+    } else {
+      tf2_buffer_.transform(cloud, height_cloud, height_reference_frame_, tf_tolerance_);
+    }
+
     // now we need to remove observations from the cloud that are below
     // or above our height thresholds
     sensor_msgs::msg::PointCloud2 & observation_cloud = *(observation_list_.front().cloud_);
@@ -133,15 +145,15 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     unsigned int point_count = 0;
 
     // copy over the points that are within our height bounds
-    sensor_msgs::PointCloud2Iterator<float> iter_z(global_frame_cloud, "z");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_z(height_cloud, "z");
     std::vector<unsigned char>::const_iterator iter_global = global_frame_cloud.data.begin(),
       iter_global_end = global_frame_cloud.data.end();
     std::vector<unsigned char>::iterator iter_obs = observation_cloud.data.begin();
     for (; iter_global != iter_global_end; ++iter_z, iter_global +=
       global_frame_cloud.point_step)
     {
-      if ((*iter_z) <= max_obstacle_height_ &&
-        (*iter_z) >= min_obstacle_height_)
+      const double height = (*iter_z) - height_reference_ground_z_;
+      if (height <= max_obstacle_height_ && height >= min_obstacle_height_)
       {
         std::copy(iter_global, iter_global + global_frame_cloud.point_step, iter_obs);
         iter_obs += global_frame_cloud.point_step;

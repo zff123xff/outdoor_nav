@@ -133,11 +133,14 @@ void ObstacleLayer::onInitialize()
   while (ss >> source) {
     // get the parameters for the specific topic
     double observation_keep_time, expected_update_rate, min_obstacle_height, max_obstacle_height;
-    std::string topic, sensor_frame, data_type;
+    std::string topic, sensor_frame, data_type, height_reference_frame;
+    double height_reference_ground_z;
     bool inf_is_valid, clearing, marking;
 
     declareParameter(source + "." + "topic", rclcpp::ParameterValue(source));
     declareParameter(source + "." + "sensor_frame", rclcpp::ParameterValue(std::string("")));
+    declareParameter(source + ".height_reference_frame", rclcpp::ParameterValue(std::string("")));
+    declareParameter(source + ".height_reference_ground_z", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "observation_persistence", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "expected_update_rate", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "data_type", rclcpp::ParameterValue(std::string("LaserScan")));
@@ -153,6 +156,8 @@ void ObstacleLayer::onInitialize()
 
     node->get_parameter(name_ + "." + source + "." + "topic", topic);
     node->get_parameter(name_ + "." + source + "." + "sensor_frame", sensor_frame);
+    node->get_parameter(name_ + "." + source + ".height_reference_frame", height_reference_frame);
+    node->get_parameter(name_ + "." + source + ".height_reference_ground_z", height_reference_ground_z);
     node->get_parameter(
       name_ + "." + source + "." + "observation_persistence",
       observation_keep_time);
@@ -201,7 +206,8 @@ void ObstacleLayer::onInitialize()
           max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
           raytrace_min_range, *tf_,
           global_frame_,
-          sensor_frame, tf2::durationFromSec(transform_tolerance))));
+          sensor_frame, tf2::durationFromSec(transform_tolerance),
+          height_reference_frame, height_reference_ground_z)));
 
     // check if we'll add this buffer to our marking observation buffers
     if (marking) {
@@ -279,12 +285,14 @@ void ObstacleLayer::onInitialize()
       observation_notifiers_.push_back(filter);
     }
 
-    if (sensor_frame != "") {
-      std::vector<std::string> target_frames;
-      target_frames.push_back(global_frame_);
+    std::vector<std::string> target_frames{global_frame_};
+    if (!sensor_frame.empty()) {
       target_frames.push_back(sensor_frame);
-      observation_notifiers_.back()->setTargetFrames(target_frames);
     }
+    if (!height_reference_frame.empty() && height_reference_frame != global_frame_) {
+      target_frames.push_back(height_reference_frame);
+    }
+    observation_notifiers_.back()->setTargetFrames(target_frames);
   }
 }
 

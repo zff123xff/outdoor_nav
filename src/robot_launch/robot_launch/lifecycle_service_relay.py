@@ -17,9 +17,10 @@ class LifecycleRelay(Node):
     def __init__(self):
         super().__init__('lifecycle_service_relay')
         self.timeout = float(self.declare_parameter('response_timeout', 30.0).value)
+        self.activation_timeout = float(self.declare_parameter('activation_timeout', 180.0).value)
         self.query_timeout = float(self.declare_parameter('query_timeout', 2.0).value)
         self.attempts = int(self.declare_parameter('query_attempts', 3).value)
-        if self.timeout <= 0 or self.query_timeout <= 0 or self.attempts < 1:
+        if self.timeout <= 0 or self.activation_timeout <= 0 or self.query_timeout <= 0 or self.attempts < 1:
             raise ValueError('Lifecycle timeouts and query_attempts must be positive')
         names = self.declare_parameter('node_names', ['controller_server', 'straight_planner']).value
         self.group = ReentrantCallbackGroup()
@@ -78,7 +79,10 @@ class LifecycleRelay(Node):
             if target is not None and before is not None and before.id == target:
                 response.success = True
                 return response
-            result = self.call(self.rpc_clients[name][0], request, self.timeout)
+            # Activation can legitimately wait for odometry/TF while the
+            # simulator starts. Keep its budget aligned with the launch watchdog.
+            timeout = self.activation_timeout if request.transition.id == 3 else self.timeout
+            result = self.call(self.rpc_clients[name][0], request, timeout)
             if result is not None:
                 response.success = result.success
                 return response

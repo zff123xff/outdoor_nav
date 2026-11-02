@@ -76,7 +76,7 @@ if [[ "$mode" == build || "$mode" == all ]]; then
     colcon build --base-paths src --build-base build_nx --install-base install_nx \
       --executor sequential --symlink-install \
       --packages-up-to robot_launch go2w_driver remote_override mavros_odom_relay \
-        execute_task_server multi_goal_to_gp_goal multi_task_bridge backend_nodes \
+        execute_task_server multi_goal_to_gp_goal multi_task_bridge backend_nodes patrol_node \
       --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
     mkdir -p "$here/reports"
     for repository in "$third/unitree_ros2" "$third/Livox-SDK2" "$third/livox_ws/src/livox_ros_driver2"; do
@@ -84,7 +84,7 @@ if [[ "$mode" == build || "$mode" == all ]]; then
         git -C "$repository" rev-parse HEAD
     done > "$here/reports/dependency_commits.txt"
     source install_nx/local_setup.bash
-    python3 -c 'import rclpy, pymap3d, multi_task_bridge.node; from unitree_go.msg import SportModeState; from unitree_api.msg import Request; from execute_task_server.srv import ExecuteTask; print("NX imports OK")'
+    python3 -c 'import rclpy, pymap3d, multi_task_bridge.node; from unitree_go.msg import SportModeState; from unitree_api.msg import Request; from execute_task_server.srv import ExecuteTask; from patrol_node.action import Patrol; print("NX imports OK")'
     [[ -f "$here/config.env" ]] || cp "$here/config.env.example" "$here/config.env"
     echo "Build complete. Edit $here/config.env, hardware nav YAML and MID360 JSON before startup."
 fi

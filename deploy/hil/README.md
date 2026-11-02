@@ -5,22 +5,22 @@
 ```bash
 ROS_DOMAIN_ID=30 RMW_IMPLEMENTATION=rmw_fastrtps_cpp bash deploy/nx/run.sh hil
 # 等价入口
-ROS_DOMAIN_ID=30 RMW_IMPLEMENTATION=rmw_fastrtps_cpp bash launch_hil.sh
+ROS_DOMAIN_ID=30 RMW_IMPLEMENTATION=rmw_fastrtps_cpp bash deploy/hil/launch.sh
 ```
 
 指定启动哪台机器人（命名空间决定全部话题、TF 帧名和节点名）：
 
 ```bash
 # 显式命名空间参数
-bash launch_hil.sh --namespace robot_2
-bash launch_hil.sh -n robot_2
-bash launch_hil.sh --namespace=robot_2
+bash deploy/hil/launch.sh --namespace robot_2
+bash deploy/hil/launch.sh -n robot_2
+bash deploy/hil/launch.sh --namespace=robot_2
 
 # 原始 ROS launch 参数仍然可用
-bash launch_hil.sh robot_namespace:=robot_2
+bash deploy/hil/launch.sh robot_namespace:=robot_2
 
 # 环境变量（deploy/nx/run.sh hil 用的是这个）
-HIL_ROBOT_NAMESPACE=robot_2 bash launch_hil.sh
+HIL_ROBOT_NAMESPACE=robot_2 bash deploy/hil/launch.sh
 HIL_ROBOT_NAMESPACE=robot_2 bash deploy/nx/run.sh hil
 ```
 

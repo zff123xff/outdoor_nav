@@ -1,0 +1,16 @@
+{
+  "projectName": "outdoor_nav",
+  "executables": [
+    {
+      "name": "outdoor_nav",
+      "sources": [],
+      "headers": [],
+      "templateHeaders": [],
+      "dependencies": [],
+      "includeDirs": [
+        "include"
+      ]
+    }
+  ],
+  "notify": true
+}

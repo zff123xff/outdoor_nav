@@ -9,12 +9,20 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>task_pipeline</exec_depend>
+  <exec_depend>patrol_node</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>geographic_msgs</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_controller</exec_depend>
   <exec_depend>nav2_straight_planner</exec_depend>

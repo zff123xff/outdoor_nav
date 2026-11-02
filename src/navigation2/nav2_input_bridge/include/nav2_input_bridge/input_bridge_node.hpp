@@ -18,6 +18,8 @@
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "tf2_ros/transform_broadcaster.h"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 
 namespace nav2_input_bridge
 {
@@ -60,6 +62,9 @@ private:
   std::string goal_output_frame_;
   bool require_goal_fix_;
   bool goal_yaw_from_bearing_;
+  std::string robot_base_frame_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_fallback_sub_;
@@ -68,6 +73,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_detected_sub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr stop_planner_pub_;
+
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr nav_run_pub_;
+  rclcpp::TimerBase::SharedPtr nav_run_timer_;
 
   // Broadcasts /{ns}/odom -> /{ns}/base_link from the mavros odom topic.
   // (The installed mavros C++ local_position plugin CAN also broadcast this

@@ -3,18 +3,14 @@
 <package format="3">
   <name>execute_task_server</name>
   <version>0.0.1</version>
-  <description>ExecuteTask service server for receiving multi-goal tasks from command center</description>
+  <description>ExecuteTask service interface used by the task pipeline dispatcher</description>
   <maintainer email="lenovo@todo.todo">lenovo</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
-  <depend>rclcpp</depend>
   <depend>std_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>msg_set_msgs</depend>
-
   <exec_depend>rosidl_default_runtime</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

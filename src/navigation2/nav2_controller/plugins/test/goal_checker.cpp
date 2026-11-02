@@ -38,11 +38,13 @@
 #include "gtest/gtest.h"
 #include "nav2_controller/plugins/simple_goal_checker.hpp"
 #include "nav2_controller/plugins/stopped_goal_checker.hpp"
+#include "nav2_controller/plugins/position_goal_checker.hpp"
 #include "nav_2d_utils/conversions.hpp"
 #include "nav2_util/lifecycle_node.hpp"
 
 using nav2_controller::SimpleGoalChecker;
 using nav2_controller::StoppedGoalChecker;
+using nav2_controller::PositionGoalChecker;
 
 void checkMacro(
   nav2_core::GoalChecker & gc,
@@ -235,6 +237,31 @@ TEST(StoppedGoalChecker, get_tol_and_dynamic_params)
   EXPECT_TRUE(gc.getTolerances(pose_tol, vel_tol));
   EXPECT_EQ(pose_tol.position.x, 200.0);
   EXPECT_EQ(pose_tol.position.y, 200.0);
+}
+
+TEST(PositionGoalCheckerTest, PositionToleranceIsEnoughRegardlessOfHeading)
+{
+  PositionGoalChecker checker;
+  checker.setXYGoalTolerance(0.5);
+  checkMacro(checker, 0.49, 0.0, 3.141592653589793, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, true);
+  checkMacro(checker, 0.5, 0.0, 3.141592653589793, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, true);
+  checkMacro(checker, 0.5001, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, false);
+}
+
+TEST(PositionGoalCheckerTest, ResetRequiresArrivalAtTheNewTarget)
+{
+  PositionGoalChecker checker;
+  checker.setXYGoalTolerance(0.5);
+  geometry_msgs::msg::Pose robot, goal;
+  geometry_msgs::msg::Twist speed;
+  robot.position.x = 0.49;
+  ASSERT_TRUE(checker.isGoalReached(robot, goal, speed));
+  goal.position.x = 10.0;
+  checker.reset();
+  EXPECT_FALSE(checker.isGoalReached(robot, goal, speed));
 }
 
 int main(int argc, char ** argv)

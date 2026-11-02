@@ -1,93 +1,31 @@
-# CLAUDE.md
+# Repository notes
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Supported full-system startup
 
-## Build Commands
+- Local Gazebo: `bash launch_sim.sh`. This launch starts Nav2 and task pipeline only. Start Gazebo separately from sim_ws/launch_sim.sh. Neither workspace sources or starts the other.
+- Physical Go2-W: `bash launch_real.sh`. This single launch starts the Go2-W driver, MAVROS/PX4, Nav2, and task pipeline.
+- NX/ZNY HIL deployment helper: `bash deploy/nx/run.sh hil`.
+
+Do not run a second Nav2 stack or a separate task-pipeline launch alongside either full-system entry. Only real.launch.py and simulation.launch.py are public launches. Shared composition lives in src/robot_launch/robot_launch/bringup.
+
+## Task flow
+
+Manual YAML clients and optional MQTT use the same chain:
+
+```text
+manual/MQTT → ExecuteTask → task_pipeline → PointGoal/Patrol executor
+            → navigate_to_pose Action → straight_planner → FollowPath → controller_server
+```
+
+Task mission files live in `src/external_pkg/task_pipeline/config`. Their ENU origin is resolved from the running `nav2_input_bridge`; do not copy reference coordinates into task YAML. The active Nav2 YAML is the upstream source for reference coordinates; the controller goal_checker owns arrival tolerances.
+
+## Build and checks
 
 ```bash
-# Build all packages (skipping fast_lio by default)
-./build.sh
-
-# Build including fast_lio (for offline mapping)
-./build.sh --packages-skip ''
-
-# Build with tests disabled (default)
-colcon build --symlink-install --packages-skip fast_lio --cmake-args -DBUILD_TESTING=OFF
+source "${CODEX_HOME:-$HOME/.codex}/ros/setup.bash"
+bash build.sh
 ```
 
-## Launch Scripts
+Run package tests from the sourced workspace. Keep `ROS_DOMAIN_ID`, RMW implementation, and DDS settings inherited unless the selected simulator or robot setup explicitly needs a task-local override.
 
-```bash
-# Full system (运控 + PX4 + 导航 + 原点设置)
-bash launch_all.sh
-
-# Navigation only (no GPS origin)
-bash launch.sh
-
-# Navigation with GPS goal input
-bash launch_all.sh use_auto_origin:=false
-
-# 分步启动
-bash launch_car.sh   # CAN 运控
-bash launch_loc.sh   # PX4 EKF2
-bash launch.sh       # 导航栈
-```
-
-## Architecture
-
-### 坐标系统
-- **ENU 坐标系**：原点为 `gp_origin`（小车上电后锁定），X-东，Y-北，Z-天
-- **GPS 投影**：`nav2_input_bridge::llaToEnu()` 使用球面切平面投影（与 PX4 MapProjection 一致）
-- **椭球投影备用**：代码中以 `#if 0` 注释保留 WGS84 椭球算法，5km+ 场景可将 `#if 0` 改为 `#if 1` 启用
-
-### 核心自定义包
-
-#### nav2_input_bridge
-- 订阅 `/gp_goal` 和 `/uav/target_gps`（`sensor_msgs/NavSatFix`）
-- 将 GPS 坐标转换为 ENU 局部坐标，发布到 `/goal_pose`
-- 接收 `/target_detected`（YOLO 检测信号），通过 `stop_planner` + 取消 FollowPath action 实现立即停车
-
-#### nav2_straight_planner
-- LifecycleNode，实现直线路径规划器
-- 订阅 `/goal_pose`，发布 FollowPath action goal 到 `controller_server`
-- 订阅 `stop_planner` topic，收到后取消当前 FollowPath，记录停止位置
-- 拒绝与停止位置距离 < 0.1m 的新目标（防止重复触发）
-
-### YOLO 停止机制（方案B）
-```
-YOLO 检测 → /target_detected → nav2_input_bridge
-                                    ↓
-                          发布 stop_planner=true
-                                    ↓
-                          取消 FollowPath action
-                                    ↓
-                              straight_planner
-                                    ↓
-                          记录停止位置，拒绝近处目标
-```
-
-### PX4 定位融合
-- 小车使用 Pixhawk EKF2 融合定位，通过 `/mavros/local_position/odom` 提供位姿
-- ENU 原点通过 `set_gp_origin` 服务设置（自动或手动）
-
-## Submodules
-
-```bash
-# 克隆时拉取所有子模块
-git clone --recurse-submodules git@github.com:VisionTrekker/outdoor_nav.git
-
-# 后续更新子模块
-git submodule update --init --recursive
-```
-
-- `src/slam/FAST_LIO/` — 激光 SLAM（仅离线建图用，不参与导航运行时）
-- `src/driver/livox_ros_driver2/` — Livox 激光雷达驱动
-
-## 关键文件
-
-| 文件 | 作用 |
-|------|------|
-| `src/robot_launch/launch/outdoor_all.launch.py` | 全系统启动入口 |
-| `src/robot_launch/config/gp_goal_nx_nav2.yaml` | nav2_input_bridge 参数配置 |
-| `src/navigation2/nav2_input_bridge/src/input_bridge_node.cpp` | GPS→ENU 转换、YOLO 停止逻辑 |
-| `src/navigation2/nav2_straight_planner/src/straight_planner.cpp` | 直线规划器、停止机制 |
+See `README.md`, `docs/`, and `deploy/` for operating instructions.

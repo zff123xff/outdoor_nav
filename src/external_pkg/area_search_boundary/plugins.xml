@@ -1,0 +1,5 @@
+<library path="area_search_boundary">
+  <class name="area_search_boundary::BoundaryLayer" type="area_search_boundary::BoundaryLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Constrain local Theta* and footprint checks to the search rectangle.</description>
+  </class>
+</library>

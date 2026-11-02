@@ -66,4 +66,11 @@ ament_export_dependencies(
   tf2_geometry_msgs
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(goal_heading test/test_goal_heading.py
+    ENV "INPUT_BRIDGE_EXECUTABLE=$<TARGET_FILE:input_bridge_node>"
+    TIMEOUT 60)
+endif()
+
 ament_package()

@@ -16,6 +16,7 @@
 #include <memory>
 #include <thread>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
 #include "mqtt_utils.h"
@@ -72,6 +73,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr globalPosition_sub_;
     rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr statePX4_sub_;
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr taskIndex_sub_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr taskFeedback_sub_;
     rclcpp::Subscription<msg_set_msgs::msg::CoverIndex>::SharedPtr pastIndex_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr canConfirmedFlag_sub_;
     rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr track_img_sub_;
@@ -286,6 +288,7 @@ public:
     void targetsCallback(const msg_set_msgs::msg::TargetsPose::SharedPtr msg);
 
     void taskIndexCallback(const std_msgs::msg::UInt8::SharedPtr msg);
+    void taskFeedbackCallback(const std_msgs::msg::String::SharedPtr msg);
 
     void pastIndexCallback(const msg_set_msgs::msg::CoverIndex::SharedPtr msg);
 

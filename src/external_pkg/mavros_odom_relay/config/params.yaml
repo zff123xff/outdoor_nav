@@ -1,5 +1,0 @@
-/**:
-  ros__parameters:
-    input_topic: "/mavros/local_position/odom"
-    output_topic: "/odom"
-    frame_id_rewrite: ""

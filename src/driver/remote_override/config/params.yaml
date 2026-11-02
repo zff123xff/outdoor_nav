@@ -1,8 +1,0 @@
-remote_override:
-  ros__parameters:
-    # 速度参数 
-    vx_max: 1.0          # m/s, 最大前进速度
-    vyaw_max: 0.8        # rad/s, 最大转向速度
-
-    # 遥感激活阈值
-    activation_threshold: 0.05  # |y|>0.05 或 |z|>0.05 认为激活

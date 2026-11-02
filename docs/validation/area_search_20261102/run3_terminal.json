@@ -1,0 +1,21 @@
+{
+  "wall": 1793557954.4475548,
+  "state": "partial",
+  "reason": "no reachable usable frontier; remaining unknown is not reported as covered; frontier_diagnostics={\"cleanup_viewpoint\": false, \"cooldown\": 0, \"frontier_cells\": 12, \"not_visible\": 13, \"outside_region\": 16, \"reachable_cells\": 9467, \"short_step_candidates\": 0, \"small_clusters\": 5, \"start_cell\": [45, 93], \"too_close\": 0, \"unreachable\": 9, \"used_short_step\": false}",
+  "robot_namespace": "robot_1",
+  "mission_id": "area_opt_run3",
+  "team": [
+    "robot_1"
+  ],
+  "searched_area_m2": 99.41000000000003,
+  "assigned_area_m2": 100.00000000000001,
+  "observed_ratio": 0.9941,
+  "frontier_clusters": 2,
+  "assigned_region": {
+    "east": 10.0,
+    "north": 0.0,
+    "length": 10.0,
+    "width": 10.0,
+    "yaw": 0.0
+  }
+}

@@ -52,7 +52,7 @@ Defaults:
 
 ## Repoint Nav2
 
-In `src/robot_launch/config/go2w_nav2.yaml` (and `gp_goal_nx_nav2.yaml`):
+In `src/robot_launch/config/go2w_nav2.yaml`:
 
 ```yaml
 controller_server:

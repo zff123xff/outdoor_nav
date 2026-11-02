@@ -64,7 +64,7 @@ def main():
     ]
     processes, streams = [], []
     result = {'domain_id': args.domain_id, 'fixture_only': True, 'physical_motion_tested': False}
-    config = yaml.safe_load((ROOT/'src/robot_launch/config/zny_hil.yaml').read_text())
+    config = yaml.safe_load((ROOT/'src/robot_launch/config/go2w_nav2.yaml').read_text())
     def force_clock(value):
         if isinstance(value, dict):
             return {k: True if k == 'use_sim_time' else force_clock(v) for k,v in value.items()}

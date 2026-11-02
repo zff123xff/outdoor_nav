@@ -63,6 +63,7 @@ namespace MqttTopic
     std::string mqtt_mavros_global_position = "/mqtt/mavros/global_position/global/";
     std::string mqtt_uav_state = "/mqtt/uav_state/";
     std::string mqtt_task_deploy_stream_feedback = "/mqtt/task_deploy/stream_feedback/";
+    std::string mqtt_task_execution_feedback = "/mqtt/task_deploy/execution_feedback/";
     std::string mqtt_follow_cover_past_index = "/mqtt/follow_cover/pass_waypoint/";
     std::string mqtt_attack_imgs = "/mqtt/attack/images/";
     std::string mqtt_attack_imgs_status = "/mqtt/attack/imgs/status/";
