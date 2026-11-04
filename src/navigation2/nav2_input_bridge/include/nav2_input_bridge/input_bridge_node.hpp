@@ -41,7 +41,6 @@ private:
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg, OdomSource source);
   void onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
   void checkOdomHealth();
-  void onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
   void processGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg, const std::string & source);
 
   void onTargetDetected(const std_msgs::msg::Bool::SharedPtr msg);
@@ -55,7 +54,6 @@ private:
   std::string local_odom_topic_;
   std::string local_odom_fallback_topic_;
   std::string goal_input_topic_;
-  std::string uav_goal_input_topic_;
   std::string target_detected_topic_;
   std::string follow_path_action_topic_;
   std::string goal_output_topic_;
@@ -69,7 +67,6 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_fallback_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr goal_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr uav_goal_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_detected_sub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr stop_planner_pub_;

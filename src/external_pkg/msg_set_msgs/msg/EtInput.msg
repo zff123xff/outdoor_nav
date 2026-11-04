@@ -1,2 +1,0 @@
-float32 horiz_track_dist
-float32 vert_track_dist

@@ -1,0 +1,15 @@
+robot_namespace: robot_1
+coordinate_frame: enu
+task:
+  task_id: multi_enu_demo
+  targets: []
+  params:
+    waypoints:
+    - enu:
+        x: 2.0
+        y: 0.0
+        z: 0.0
+    - enu:
+        x: 2.0
+        y: 3.0
+        z: 0.0

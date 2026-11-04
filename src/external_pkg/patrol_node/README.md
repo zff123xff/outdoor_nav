@@ -1,9 +1,9 @@
-# patrol_node
+# GPS 定点与两点巡线
 
-手动定点、手动巡线和 MQTT 任务统一进入 `/agent/<robot>/execute_task`。`task_pipeline` 根据 `capability_id` 将单点任务调度到 `point_goal_executor`，将 `patrol_line` 调度到 `patrol_node`；执行器将 GPS 转为 ENU 并逐点调用 `/<robot>/navigate_to_pose`；仅收到对应目标的成功结果才完成定点或切换巡线端点。Action feedback/result 由 pipeline 汇总到 `/<robot>/task_feedback`，MQTT 模式下转发到 `/mqtt/task_deploy/execution_feedback/<vehicle_id>`。
+`task_pipeline` 从 Task topic 接收任务，分别调用 `point_goal`（PointGoal）和 `patrol`（Patrol）Action。执行器将 GPS 转 ENU，逐点调用 `navigate_to_pose`，以匹配目标的导航 Action result 判断完成。统一入口巡线默认一次往返；直接调用 Patrol 可设置 max_laps。
 
-```bash
-ros2 run task_pipeline send_patrol
-```
+接口、启动及示例见 [任务链路](../../../docs/TASK_PIPELINE.md)。
 
-`patrol_node/action/Patrol` 与 `patrol_node/action/PointGoal` 是 pipeline 内部的执行器接口。手动任务请使用 `ros2 run task_pipeline send_patrol` 或 `send_point_goal`，避免绕过调度层。不要与其他导航任务同时控制同一机器人。
+巡线使用最新 `map → base_link` TF 选择最近端点，不依赖执行器独立收到 odom。
+TF 新鲜度按本机单调时钟监测：收到动态 TF 且该变换链的最新公共时间戳推进时更新；
+超过 2 秒未推进则拒绝定位。上游时间戳原样保留，不要求它与执行器主机的墙上时钟一致。

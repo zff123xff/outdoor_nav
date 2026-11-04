@@ -13,7 +13,7 @@
       # 注意：不要同时启用 waypoint 和 param！mavros 2.14.0（2026-03 构建）里
       # 两者都会创建名为 "~/pull" 的服务（ParamPull vs WaypointPull，类型不同），
       # rcl 报 "create_service() called for existing request topic ... incompatible
-      # type" 直接崩溃。狗的导航走 ROS 侧（execute_task→multi_goal_to_gp_goal→
+      # type" 直接崩溃。狗的导航走 ROS 侧（Task topic→primitive Action→
       # nav2_input_bridge），不用 PX4 机载航点，故这里不加载 waypoint。
       # 如确需 waypoint，请先用 apt 升级 mavros（2026-08-04 之后的构建已无此冲突）。
 

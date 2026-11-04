@@ -14,7 +14,6 @@
   <depend>action_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>msg_set_msgs</depend>
 
   <exec_depend>python3</exec_depend>
 

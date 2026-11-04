@@ -34,6 +34,7 @@ public:
   }
 
   using RegulatedPurePursuitController::getLocalPlan;
+  using RegulatedPurePursuitController::smoothLocalPath;
   using RegulatedPurePursuitController::linearInterpolation;
   using RegulatedPurePursuitController::shouldRotateToGoalHeading;
   using RegulatedPurePursuitController::shouldRotateToPath;
@@ -395,4 +396,51 @@ TEST(BackupRecoveryRegression, NoFreeEndpointWithinLimitDoesNotReverse)
   LocalPlanController controller(&map);
   double linear, angular;
   EXPECT_THROW(controller.computeBackupCommand(backupPose(), linear, angular), nav2_core::PlannerException);
+}
+
+TEST(LocalPathSmoothing, TightCornerDoesNotKeepUnnecessaryCornersElsewhere)
+{
+  nav2_costmap_2d::Costmap2D costmap(70, 70, 0.1, 0., 0., 0);
+  for (unsigned int y = 6; y < 20; ++y) {
+    for (unsigned int x = 11; x < 20; ++x) {costmap.setCost(x, y, 254);}
+  }
+  LocalPlanController controller(&costmap);
+  const std::vector<coordsW> guide{
+    {1.05, .55}, {1.05, 2.05}, {3.05, 2.05}, {3.05, 4.05}, {5.05, 4.05}};
+  auto path = controller.smoothLocalPath(guide);
+  ASSERT_GT(path.size(), guide.size());
+  EXPECT_DOUBLE_EQ(path.front().x, guide.front().x);
+  EXPECT_DOUBLE_EQ(path.back().x, guide.back().x);
+  double nearest = 100.;
+  for (const auto & p : path) {
+    nearest = std::min(nearest, std::hypot(p.x - guide[2].x, p.y - guide[2].y));
+  }
+  EXPECT_GT(nearest, .15);
+  for (size_t i = 1; i < path.size(); ++i) {
+    const auto & a = path[i - 1];
+    const auto & b = path[i];
+    const int count = std::max(1, static_cast<int>(std::ceil(std::hypot(b.x - a.x, b.y - a.y) / .02)));
+    for (int j = 0; j <= count; ++j) {
+      const double t = static_cast<double>(j) / count;
+      unsigned int x, y;
+      ASSERT_TRUE(costmap.worldToMap(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), x, y));
+      EXPECT_LT(costmap.getCost(x, y), 253);
+    }
+  }
+}
+
+TEST(LocalPathSmoothing, IterationsAreValidatedAndZeroKeepsOriginalPolyline)
+{
+  nav2_costmap_2d::Costmap2D costmap(50, 50, .1, 0., 0., 0);
+  LocalPlanController controller(&costmap);
+  controller.configureHeading();
+  EXPECT_FALSE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.local_path_smoothing_iterations", -1)}).successful);
+  EXPECT_TRUE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.local_path_smoothing_iterations", 0)}).successful);
+  const std::vector<coordsW> guide{{.5, .5}, {.5, 2.}, {2., 2.}};
+  auto path = controller.smoothLocalPath(guide);
+  ASSERT_EQ(path.size(), guide.size());
+  EXPECT_DOUBLE_EQ(path[1].x, guide[1].x);
+  EXPECT_DOUBLE_EQ(path[1].y, guide[1].y);
 }

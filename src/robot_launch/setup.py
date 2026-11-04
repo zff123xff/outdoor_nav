@@ -30,6 +30,7 @@ setup(
             "ground_tilt_filter = robot_launch.ground_tilt_filter:main",
             "visualization_tf = robot_launch.visualization_tf:main",
             "remote_stop_bridge = robot_launch.remote_stop_bridge:main",
+            "mavros_global_rate = robot_launch.mavros_global_rate:main",
             "auto_set_gp_origin = robot_launch.auto_set_gp_origin:main",
             "lifecycle_service_relay = robot_launch.lifecycle_service_relay:main",
             "lifecycle_startup_watchdog = robot_launch.lifecycle_startup_watchdog:main",

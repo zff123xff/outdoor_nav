@@ -1,0 +1,18 @@
+/**:
+  ros__parameters:
+    image_topic: front_camera/image_raw
+    detection_topic: yolo/detections
+    debug_image_topic: yolo/debug_image
+    expected_width: 640
+    expected_height: 480
+    expected_encoding: rgb8
+    strict_image_size: true
+    model_path: /home/nhy/models/best.engine
+    model_input_width: 640
+    model_input_height: 480
+    confidence_threshold: 0.4
+    iou_threshold: 0.45
+    max_detections: 100
+    publish_debug_image: false
+    # Empty resolves to /tmp/outdoor_nav/<namespace>/detection_targets.yaml.
+    targets_file: ""

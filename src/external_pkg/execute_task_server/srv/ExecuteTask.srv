@@ -1,6 +1,0 @@
-# ExecuteTask 服务定义
-# 任务下发请求（JSON 格式）
-string request_json
----
-# 任务执行结果（JSON 格式）
-string response_json

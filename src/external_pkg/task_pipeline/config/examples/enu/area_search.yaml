@@ -1,0 +1,13 @@
+robot_namespace: robot_1
+mission_id: co_search_rectangle_demo
+targets: []
+coordinate_mode: enu
+center_enu:
+  east: 10.0
+  north: 0.0
+rectangle:
+  length_m: 10.0
+  width_m: 10.0
+  yaw_deg: 0.0
+options:
+  sensor_timeout_s: 3.0

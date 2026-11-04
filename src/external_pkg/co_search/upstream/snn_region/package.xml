@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>snn_region</name>
+  <version>0.1.0</version>
+  <description>Local SNN-based dynamic region allocation for swarm exploration.
+     Provides SnnRegionAllocator: membrane-potential iteration with lateral
+     inhibition, capacity-normalized load balancing and sticky assignment.
+     Kept separate from ppu_opt so the local CPU implementation does not get
+     mixed up with the PPU offload path.</description>
+  <maintainer email="user@example.com">oem</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>Eigen3</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

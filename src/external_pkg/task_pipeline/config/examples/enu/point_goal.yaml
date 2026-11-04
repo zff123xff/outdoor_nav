@@ -1,0 +1,11 @@
+robot_namespace: robot_1
+coordinate_frame: enu
+task:
+  task_id: point_goal_demo
+  targets: []
+  params:
+    waypoints:
+    - enu:
+        x: 0.0
+        y: 0
+        z: 0.0

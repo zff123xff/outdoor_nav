@@ -113,6 +113,7 @@ public:
 
 protected:
   bool prefer_supplied_path_{true};
+  int local_path_smoothing_iterations_{2};
   /**
    * @brief Transforms global plan into same frame as pose and clips poses ineligible for lookaheadPoint
    * Points ineligible to be selected as a lookahead point if they are any of the following:
@@ -271,6 +272,8 @@ protected:
   const geometry_msgs::msg::PoseStamped & robot_pose);
 
   void getPlan(nav_msgs::msg::Path & path);
+
+  std::vector<coordsW> smoothLocalPath(const std::vector<coordsW> & path);
 
   nav_msgs::msg::Path linearInterpolation(
     const std::vector<coordsW> & raw_path,

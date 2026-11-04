@@ -22,7 +22,8 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import TransformStamped
 from lifecycle_msgs.srv import ChangeState
 from nav2_msgs.action import FollowPath, NavigateToPose
-from tf2_ros import StaticTransformBroadcaster
+from rclpy.duration import Duration
+from tf2_ros import TransformBroadcaster
 
 
 def main():
@@ -63,12 +64,16 @@ def main():
 
     server = ActionServer(node, FollowPath, 'follow_path', execute_callback=execute,
         cancel_callback=lambda _: CancelResponse.ACCEPT, callback_group=ReentrantCallbackGroup())
-    broadcaster = StaticTransformBroadcaster(node)
+    broadcaster = TransformBroadcaster(node)
     transform = TransformStamped()
     transform.header.stamp = node.get_clock().now().to_msg()
     transform.header.frame_id = 'completion_fixture/map'; transform.child_frame_id = 'completion_fixture/base_link'
     transform.transform.rotation.w = 1.0
-    broadcaster.sendTransform(transform)
+    def localization():
+        # Reproduce a remote odometry clock 107s ahead of the task executor.
+        transform.header.stamp = (node.get_clock().now() + Duration(seconds=107)).to_msg()
+        broadcaster.sendTransform(transform)
+    localization_timer = node.create_timer(.1, localization)
     navigation = ActionClient(node, NavigateToPose, 'navigate_to_pose')
     lifecycle = node.create_client(ChangeState, 'straight_planner/change_state')
 
@@ -139,11 +144,9 @@ def main():
         from patrol_node.point_goal_node import PointGoalNode
         from patrol_node.patrol_node import PatrolNode
         from patrol_node.action import PointGoal, Patrol
-        from multi_goal_to_gp_goal.multi_goal_to_gp_goal import MultiGoalToGpGoal
         from rclpy.parameter import Parameter
-        from msg_set_msgs.msg import MultiGoal, MultiGoalPoint
-        point, patrol, queue = PointGoalNode(), PatrolNode(), MultiGoalToGpGoal()
-        task_nodes.extend([point, patrol, queue])
+        point, patrol = PointGoalNode(), PatrolNode()
+        task_nodes.extend([point, patrol])
         for task_node in task_nodes:
             task_node.set_parameters([Parameter('reference_latitude', value=31.2),
                                       Parameter('reference_longitude', value=120.3),
@@ -153,6 +156,8 @@ def main():
         patrol_action = ActionClient(node, Patrol, 'patrol')
         wait(point_action.server_is_ready, 'point executor')
         wait(patrol_action.server_is_ready, 'patrol executor')
+        wait(lambda: patrol._robot_position_in_global_frame() is not None, 'fresh fixture localization')
+        assert patrol._last_odom_received_monotonic is None
         goal = PointGoal.Goal()
         goal.target.latitude = 31.2; goal.target.longitude = 120.3; goal.target.altitude = 20.0
         sent = point_action.send_goal_async(goal); wait(sent.done, 'point acceptance')
@@ -178,17 +183,8 @@ def main():
         wait(patrol_result.done, 'patrol completion')
         assert patrol_result.result().status == GoalStatus.STATUS_SUCCEEDED
         assert patrol_result.result().result.reached_points == 3
+        assert patrol._last_odom_received_monotonic is None, 'fixture must exercise TF-only localization'
 
-        message = MultiGoal(); message.is_gps_aid = True
-        message.multi_goal_points = [MultiGoalPoint(x_or_lat=31.2, y_or_lon=120.3, z_or_alt=20.0),
-                                     MultiGoalPoint(x_or_lat=31.2, y_or_lon=120.30001, z_or_alt=20.0)]
-        queue._on_multi_goal(message)
-        wait(lambda: len(controls)==9, 'queue controller goal')
-        controls[8]['release'].set_result('failure')
-        wait(lambda: queue._current_goal_enu is None, 'queue failure')
-        spin(.3)
-        assert len(controls)==9 and not queue._queue
-        print('Point, patrol and queue consume controller results; failure does not advance queue', flush=True)
         print('Action protocol tests passed; fixture logs: '+str(output), flush=True)
     finally:
         for task_node in task_nodes:task_node.destroy_node()

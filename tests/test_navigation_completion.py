@@ -12,13 +12,12 @@ import patrol_node
 patrol_node.__path__.insert(0, str(ROOT/'src/external_pkg/patrol_node/patrol_node'))
 from action_msgs.msg import GoalStatus
 from multi_goal_to_gp_goal.navigation_client import NavigationClient
-from multi_goal_to_gp_goal.multi_goal_to_gp_goal import MultiGoalToGpGoal
 from patrol_node.point_goal_node import PointGoalNode
 from patrol_node.patrol_node import PatrolNode
 import asyncio
 import pytest
 from geometry_msgs.msg import PoseStamped
-from multi_goal_to_gp_goal.multi_goal_to_gp_goal import lla_to_enu
+from multi_goal_to_gp_goal.coordinates import lla_to_enu
 
 
 def make_client():
@@ -79,15 +78,6 @@ def test_late_acceptance_is_canceled_and_does_not_complete_new_goal():
     new_done.assert_called_once_with(GoalStatus.STATUS_ABORTED)
 
 
-def test_waypoint_queue_does_not_advance_on_failure():
-    queue = SimpleNamespace(_queue=[1, 2], _pending_patrol=object(), _patrol_points=None,
-                            _current_goal_enu=(0, 0, 0), _current_waypoint=object(),
-                            _holding_until_ns=None, get_logger=Mock(), _advance_to_next=Mock())
-    MultiGoalToGpGoal._navigation_done(queue, GoalStatus.STATUS_ABORTED)
-    queue._advance_to_next.assert_not_called()
-    assert queue._queue == [] and queue._current_goal_enu is None
-
-
 def test_task_consumers_follow_status_not_distance():
     point = SimpleNamespace(_active=True, _reason=None, _distance=lambda: 99.0,
                             _publish_feedback=Mock(), _resolve=Mock())
@@ -140,6 +130,116 @@ def test_patrol_rejects_goal_without_fresh_localization():
                            _robot_position_in_global_frame=lambda: None, get_logger=Mock())
     assert PatrolNode._on_goal(node, Mock()) == GoalResponse.REJECT
     assert not node._active
+
+
+@pytest.mark.parametrize('failure,detail', [
+    ('missing_odom', None),
+    ('stale_odom', None),
+    ('missing_tf', 'robot_1/map -> robot_1/base_link'),
+    ('stale_tf', 'no recent timestamp advancement'),
+    ('future_tf', None),
+    ('no_dynamic_tf', 'no recent timestamp advancement'),
+    ('invalid_position', 'non-finite position'),
+    ('fresh', None),
+])
+def test_patrol_localization_reports_specific_failure(failure, detail):
+    from geometry_msgs.msg import TransformStamped
+    from rclpy.clock import ClockType
+    from rclpy.time import Time
+    from tf2_ros import TransformException
+
+    transform = TransformStamped()
+    transform.header.stamp.sec = {'stale_tf': 97, 'future_tf': 101}.get(failure, 100)
+    transform.transform.translation.x = float('nan') if failure == 'invalid_position' else 1.0
+    transform.transform.translation.y = 2.0
+    transform.transform.rotation.w = 1.0
+    node = SimpleNamespace(
+        _last_odom_received_monotonic={'missing_odom': None, 'stale_odom': 7.0}.get(failure, 10.0),
+        _last_tf_warning_monotonic=0.0,
+        _odom_sub=SimpleNamespace(topic_name='/robot_1/odom'),
+        _global_frame='robot_1/map', _robot_base_frame='robot_1/base_link',
+        _tf_buffer=Mock(), get_clock=Mock(), get_logger=Mock(),
+        get_parameter=lambda name: SimpleNamespace(value=False))
+    node._warn_localization = lambda message: PatrolNode._warn_localization(node, message)
+    node.get_clock.return_value.now.return_value = Time(seconds=100, clock_type=ClockType.ROS_TIME)
+    node._tf_buffer.lookup_transform.return_value = transform
+    node._tf_buffer.robot_update_age.return_value = {
+        'stale_tf': 3.0, 'no_dynamic_tf': None}.get(failure, 0.1)
+    if failure == 'missing_tf':
+        node._tf_buffer.lookup_transform.side_effect = TransformException('frame does not exist')
+    with patch('patrol_node.patrol_node.time.monotonic', return_value=10.0):
+        position = PatrolNode._robot_position_in_global_frame(node)
+        if detail is None:
+            assert position == (1.0, 2.0)
+            node.get_logger.return_value.warning.assert_not_called()
+        else:
+            assert position is None
+            warning = node.get_logger.return_value.warning
+            assert detail in warning.call_args.args[0]
+            PatrolNode._robot_position_in_global_frame(node)
+            warning.assert_called_once()  # Feedback retries remain throttled.
+        node._tf_buffer.lookup_transform.assert_called_with(
+            'robot_1/map', 'robot_1/base_link', Time())
+
+
+@pytest.mark.parametrize('clock_offset', [-107, 0, 107])
+def test_robot_tf_freshness_uses_local_updates_and_expires_frozen_data(clock_offset):
+    from geometry_msgs.msg import TransformStamped
+    from patrol_node.live_tf_buffer import LiveRobotTransformBuffer
+    buffer = LiveRobotTransformBuffer('map', 'base_link')
+    transform = TransformStamped()
+    transform.header.frame_id = 'map'
+    transform.child_frame_id = 'base_link'
+    transform.header.stamp.sec = 1000 + clock_offset
+    transform.transform.rotation.w = 1.0
+    with patch('patrol_node.live_tf_buffer.time.monotonic', return_value=10.0):
+        assert buffer.robot_update_age() is None
+        buffer.set_transform(transform, 'fixture')
+        assert buffer.robot_update_age() == 0.0
+    with patch('patrol_node.live_tf_buffer.time.monotonic', return_value=13.0):
+        buffer.set_transform(transform, 'fixture')  # Repeated frozen stamps do not renew freshness.
+        assert buffer.robot_update_age() == 3.0
+        transform.header.stamp.sec += 1
+        buffer.set_transform(transform, 'fixture')
+        assert buffer.robot_update_age() == 0.0
+
+
+def test_unrelated_tf_updates_do_not_keep_robot_localization_alive():
+    from geometry_msgs.msg import TransformStamped
+    from patrol_node.live_tf_buffer import LiveRobotTransformBuffer
+    buffer = LiveRobotTransformBuffer('map', 'base_link')
+    transform = TransformStamped()
+    transform.header.frame_id = 'map'
+    transform.child_frame_id = 'base_link'
+    transform.header.stamp.sec = 1000
+    transform.transform.rotation.w = 1.0
+    with patch('patrol_node.live_tf_buffer.time.monotonic', return_value=10.0):
+        buffer.set_transform(transform, 'fixture')
+    with patch('patrol_node.live_tf_buffer.time.monotonic', return_value=13.0):
+        transform.child_frame_id = 'other_robot'
+        transform.header.stamp.sec += 1
+        buffer.set_transform(transform, 'fixture')
+        assert buffer.robot_update_age() == 3.0
+
+
+def test_stale_dynamic_parent_expires_even_when_base_tf_keeps_arriving():
+    from geometry_msgs.msg import TransformStamped
+    from patrol_node.live_tf_buffer import LiveRobotTransformBuffer
+    buffer = LiveRobotTransformBuffer('map', 'base_link')
+    parent, base = TransformStamped(), TransformStamped()
+    for transform in (parent, base):
+        transform.header.stamp.sec = 1000
+        transform.transform.rotation.w = 1.0
+    parent.header.frame_id, parent.child_frame_id = 'map', 'odom'
+    base.header.frame_id, base.child_frame_id = 'odom', 'base_link'
+    with patch('patrol_node.live_tf_buffer.time.monotonic', return_value=10.0):
+        buffer.set_transform(parent, 'fixture')
+        buffer.set_transform(base, 'fixture')
+        assert buffer.robot_update_age() == 0.0
+    with patch('patrol_node.live_tf_buffer.time.monotonic', return_value=13.0):
+        base.header.stamp.sec += 1
+        buffer.set_transform(base, 'fixture')
+        assert buffer.robot_update_age() == 3.0
 
 
 def test_navigation_client_preserves_patrol_travel_heading():

@@ -17,7 +17,7 @@ from rclpy.task import Future
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from multi_goal_to_gp_goal.multi_goal_to_gp_goal import lla_to_enu
+from multi_goal_to_gp_goal.coordinates import lla_to_enu
 
 
 class PointGoalNode(Node):
@@ -58,6 +58,8 @@ class PointGoalNode(Node):
         self._last_feedback_ns = 0
         self._primitive_id = ''
         self._last_tf_warning = 0.0
+        self._progress_start_xy = None
+        self._progress_total_m = None
 
         self._action_server = ActionServer(
             self, PointGoal, self.get_parameter('action_name').value,
@@ -115,6 +117,9 @@ class PointGoalNode(Node):
         lat0, lon0, alt0 = self._origin()
         self._target_enu = lla_to_enu(p.latitude, p.longitude, p.altitude, lat0, lon0, alt0)
         self._target = (p.latitude, p.longitude, p.altitude)
+        self._progress_start_xy = None
+        self._progress_total_m = None
+        self._enu_progress()  # Capture the fresh ENU start before dispatch.
         self._last_feedback_ns = 0
         self._reason = None
         self._done_future = Future()
@@ -177,7 +182,11 @@ class PointGoalNode(Node):
                 self.get_logger().warning(f'Waiting for robot TF: {exc}')
                 self._last_tf_warning = now
             return None
-        return transform.transform.translation.x, transform.transform.translation.y
+        age = (self.get_clock().now() - Time.from_msg(transform.header.stamp)).nanoseconds / 1e9
+        xy = transform.transform.translation.x, transform.transform.translation.y
+        if age < -.5 or age > 2.0 or not all(math.isfinite(v) for v in xy):
+            return None
+        return xy
 
     def _navigation_done(self, status):
         if not self._active or self._reason == 'canceled':
@@ -200,6 +209,19 @@ class PointGoalNode(Node):
             return float('inf')
         return math.hypot(xy[0] - self._target_enu[0], xy[1] - self._target_enu[1])
 
+    def _enu_progress(self):
+        if self._target_enu is None:
+            return -1.0
+        xy = self._robot_xy()
+        if xy is None:
+            return -1.0
+        if self._progress_start_xy is None:
+            self._progress_start_xy = xy
+            self._progress_total_m = math.dist(xy, self._target_enu[:2])
+        if self._progress_total_m <= 1e-6:
+            return 0.0
+        return min(99.0, 100.0 * math.dist(self._progress_start_xy, xy) / self._progress_total_m)
+
     def _publish_feedback(self, distance, phase, reached, force=False):
         if self._goal_handle is None:
             return
@@ -213,6 +235,7 @@ class PointGoalNode(Node):
         feedback.distance_to_target_m = distance
         feedback.reached = reached
         feedback.primitive_id = self._primitive_id
+        feedback.progress = self._enu_progress()
         self._goal_handle.publish_feedback(feedback)
 
 

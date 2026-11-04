@@ -102,12 +102,9 @@ NO ODOMETRY on '/robot_1/mavros/odom' after 11.0 s and no publisher is connected
 
 将导航代码同步到nx板卡上：
 ```bash
-rsync -avz --itemize-changes \
-  --exclude='.git/' \
-  --exclude='build*/' --exclude='install*/' --exclude='log/' \
-  --exclude='hil_deps/' --exclude='nx_deps/' \
-  --exclude='__pycache__/' --exclude='*.pyc' \
-  --exclude='deploy/nx/config.env' --exclude='deploy/nx/hil.env' \
-  /home/nhy/Go2-w_nav/outdoor_nav/ \
-  nhy@192.168.55.1:~/outdoor_nav/
+src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rsync -avz --itemize-changes --no-o --no-g \
+  --exclude='.git/' --exclude='build*/' --exclude='install*/' --exclude='log/' \
+  --exclude='/launch_sim.sh' --exclude='/launch_real.sh' --exclude='/run_primitive.sh'\
+  "$src_dir/" nhy@192.168.56.1:~/outdoor_nav_1104/
 ```

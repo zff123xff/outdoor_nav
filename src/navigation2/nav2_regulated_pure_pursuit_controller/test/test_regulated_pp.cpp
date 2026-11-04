@@ -111,6 +111,8 @@ public:
   nav_msgs::msg::Path transformGlobalPlanWrapper(
     const geometry_msgs::msg::PoseStamped & pose)
   {
+    // Isolate frame transformation/pruning from the preceding local planner.
+    local_plan_ = global_plan_;
     return transformGlobalPlan(pose);
   }
 };
@@ -442,36 +444,40 @@ TEST(RegulatedPurePursuitTest, rotateTests)
   geometry_msgs::msg::Twist curr_speed;
   curr_speed.angular.z = 1.75;
 
-  // basic full speed at a speed
+  // Rotation integrates bounded acceleration from the previous COMMAND.
+  // Gait-induced measured angular velocity must not replace that state.
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
   EXPECT_EQ(lin_v, 0.0);
-  EXPECT_EQ(ang_v, 1.6);  // hit slow down limit
+  EXPECT_NEAR(ang_v, 0.04, 1e-6);
 
   // negative direction
   angle_to_path = -0.4;
   curr_speed.angular.z = -1.75;
+  ctrl->setPlan(nav_msgs::msg::Path());
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
-  EXPECT_EQ(ang_v, -1.6);  // hit slow down limit
+  EXPECT_NEAR(ang_v, -0.04, 1e-6);
 
   // kinematic clamping, no speed, some speed accelerating, some speed decelerating
   angle_to_path = 0.4;
   curr_speed.angular.z = 0.0;
+  ctrl->setPlan(nav_msgs::msg::Path());
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
-  EXPECT_NEAR(ang_v, 0.16, 0.01);
+  EXPECT_NEAR(ang_v, 0.04, 1e-6);
 
   curr_speed.angular.z = 1.0;
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
-  EXPECT_NEAR(ang_v, 1.16, 0.01);
+  EXPECT_NEAR(ang_v, 0.075, 1e-6);
 
   angle_to_path = -0.4;
   curr_speed.angular.z = 1.0;
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
-  EXPECT_NEAR(ang_v, 0.84, 0.01);
+  EXPECT_NEAR(ang_v, 0.025625, 1e-6);  // braking before reversing the command
 
   // Equivalent headings outside [-pi, pi] must take the shortest turn.
   curr_speed.angular.z = 0.0;
   const double pi = std::acos(-1.0);
   angle_to_path = 2.0 * pi - 0.2;
+  ctrl->setPlan(nav_msgs::msg::Path());
   ctrl->rotateToHeadingWrapper(lin_v, ang_v, angle_to_path, curr_speed);
   EXPECT_LT(ang_v, 0.0);
 

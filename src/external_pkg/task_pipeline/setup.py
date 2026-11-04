@@ -12,22 +12,24 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        *[(os.path.join('share', package_name, os.path.dirname(path)), [path])
+          for path in glob('config/**/*.yaml', recursive=True)],
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='todo',
     maintainer_email='todo@example.com',
-    description='Task pipeline senders and shared YAML task goals.',
+    description='FIFO primitive dispatch, MQTT ingress, multi-point execution and example publishers.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'send_point_goal = task_pipeline.send_point_goal:main',
-            'send_patrol = task_pipeline.send_patrol:main',
+            'send_point_goal = task_pipeline.examples.sender:send_point_goal',
+            'multi_point_executor = task_pipeline.multi_point_executor:main',
+            'send_multi_point = task_pipeline.examples.sender:send_multi_point',
+            'send_patrol = task_pipeline.examples.sender:send_patrol',
             'pipeline_dispatcher = task_pipeline.dispatcher:main',
             'mqtt_task_gateway = task_pipeline.mqtt_task_gateway:main',
-            'send_area_search = task_pipeline.send_area_search:main',
-            'area_search = task_pipeline.area_search:main',
+            'send_area_search = task_pipeline.examples.sender:send_area_search',
         ],
     },
 )

@@ -32,7 +32,10 @@
   <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>nav2_input_bridge</exec_depend>
   <exec_depend>mavros</exec_depend>
+  <exec_depend>mavros_msgs</exec_depend>
   <exec_depend>ros2can</exec_depend>
+
+  <exec_depend>co_search_nav</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

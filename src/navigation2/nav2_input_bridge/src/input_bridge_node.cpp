@@ -81,7 +81,6 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   odom_timeout_s_ = declare_parameter("odom_timeout_s", 2.0);
   odom_watchdog_period_s_ = declare_parameter("odom_watchdog_period_s", 1.0);
   goal_input_topic_ = declare_parameter("goal_input_topic", std::string("gp_goal"));
-  uav_goal_input_topic_ = declare_parameter("uav_goal_input_topic", std::string("uav/target_gps"));
   target_detected_topic_ = declare_parameter("target_detected_topic", std::string("target_detected"));
   goal_output_topic_ = declare_parameter("goal_output_topic", std::string("goal_pose"));
   goal_output_frame_ = declare_parameter("goal_output_frame", std::string("map"));
@@ -134,10 +133,6 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   goal_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
     goal_input_topic_, goal_qos,
     std::bind(&InputBridgeNode::onGoalFix, this, std::placeholders::_1));
-
-  uav_goal_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
-    uav_goal_input_topic_, goal_qos,
-    std::bind(&InputBridgeNode::onUavGoalFix, this, std::placeholders::_1));
 
   target_detected_sub_ = create_subscription<std_msgs::msg::Bool>(
     target_detected_topic_, 10,
@@ -536,11 +531,6 @@ void InputBridgeNode::processGoalFix(
 void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
   processGoalFix(msg, "manual");
-}
-
-void InputBridgeNode::onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
-{
-  processGoalFix(msg, "uav");
 }
 
 // 发送取消导航任务指令

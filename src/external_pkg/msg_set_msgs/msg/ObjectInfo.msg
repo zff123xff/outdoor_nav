@@ -1,9 +1,0 @@
-int32 x1
-int32 y1
-int32 x2
-int32 y2
-int32 label
-int32 id
-float32 x
-float32 y
-float32 z

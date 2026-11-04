@@ -89,9 +89,8 @@ def main():
             grid=messages['costmap'];result['costmap']={'frame':grid.header.frame_id,'width':grid.info.width,'height':grid.info.height,'nonzero':sum(v>0 for v in grid.data),'lethal':sum(v>=99 for v in grid.data)}
         result['cmd_consumers']=endpoints('/robot_1/cmd_vel',True)
         result['set_gp_origin_subscribers']=node.count_subscribers('/robot_1/mavros/set_gp_origin')
-        result['waypoint_subscribers']=node.count_subscribers('/robot_1/waypoint_goals')
-        result['root_waypoint_subscribers']=node.count_subscribers('/waypoint_goals')
-        result['execute_task_available']=any('execute_task' in name for name,types in node.get_service_names_and_types())
+        result['task_subscribers']=node.count_subscribers('/robot_1/task')
+        result['robot_task_status_available']=any(name == '/robot_1/robot_task_status' for name, types in node.get_topic_names_and_types())
         # Transform actual recorded points with actual TF, without injecting any TF or odometry.
         sensor_tf=tf('map','livox_frame').transform;q=sensor_tf.rotation
         row=[2*(q.x*q.z-q.w*q.y),2*(q.y*q.z+q.w*q.x),1-2*(q.x*q.x+q.y*q.y)]

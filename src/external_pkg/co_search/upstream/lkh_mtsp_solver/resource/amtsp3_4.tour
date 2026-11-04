@@ -1,0 +1,12 @@
+NAME : pairopt.100000_100000.tour
+COMMENT : Cost = 100000_100000
+COMMENT : Found by LKH-3 [Keld Helsgaun] Mon Oct 26 20:00:52 2026
+TYPE : TOUR
+DIMENSION : 4
+TOUR_SECTION
+1
+2
+4
+3
+-1
+EOF

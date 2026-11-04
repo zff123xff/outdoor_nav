@@ -77,6 +77,13 @@ void RegulatedPurePursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".prefer_supplied_path", rclcpp::ParameterValue(true));
   node->get_parameter(plugin_name_ + ".prefer_supplied_path", prefer_supplied_path_);
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".local_path_smoothing_iterations", rclcpp::ParameterValue(2));
+  node->get_parameter(
+    plugin_name_ + ".local_path_smoothing_iterations", local_path_smoothing_iterations_);
+  if (local_path_smoothing_iterations_ < 0 || local_path_smoothing_iterations_ > 5) {
+    throw std::invalid_argument("local_path_smoothing_iterations must be between 0 and 5");
+  }
   goal_dist_tol_ = 0.25;  // reasonable default before first update
 
   declare_parameter_if_not_declared(
@@ -1189,11 +1196,67 @@ void RegulatedPurePursuitController::getPlan(nav_msgs::msg::Path & path)
   //   path.poses.clear();
   // } else 
   if (planner_->generatePath(tmp_path)) {
-    path = linearInterpolation(tmp_path, planner_->costmap_->getResolution());
+    path = linearInterpolation(smoothLocalPath(tmp_path), planner_->costmap_->getResolution());
   } else {
     RCLCPP_ERROR(logger_, "Could not generate path between the given poses");
     path.poses.clear();
   }
+}
+
+std::vector<coordsW> RegulatedPurePursuitController::smoothLocalPath(
+  const std::vector<coordsW> & path)
+{
+  auto safe = [&](const coordsW & a, const coordsW & b, unsigned char & peak) {
+      const int count = std::max(1, static_cast<int>(std::ceil(
+        std::hypot(b.x - a.x, b.y - a.y) / (costmap_->getResolution() / 3.0))));
+      unsigned int px = 0, py = 0;
+      bool previous = false;
+      for (int i = 0; i <= count; ++i) {
+        const double t = static_cast<double>(i) / count;
+        unsigned int x, y;
+        if (!costmap_->worldToMap(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), x, y)) {
+          return false;
+        }
+        const auto cost = costmap_->getCost(x, y);
+        if (cost >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {return false;}
+        if (previous && x != px && y != py &&
+          (costmap_->getCost(px, y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE ||
+          costmap_->getCost(x, py) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
+        {
+          return false;
+        }
+        peak = std::max(peak, cost); px = x; py = y; previous = true;
+      }
+      return true;
+    };
+  auto current = path;
+  for (int iteration = 0; iteration < local_path_smoothing_iterations_ && current.size() > 2;
+    ++iteration)
+  {
+    std::vector<coordsW> result{current.front()};
+    for (size_t i = 1; i + 1 < current.size(); ++i) {
+      const auto & a = current[i - 1];
+      const auto & b = current[i];
+      const auto & c = current[i + 1];
+      unsigned char original_peak = 0;
+      bool rounded = false;
+      if (safe(result.back(), b, original_peak) && safe(b, c, original_peak)) {
+        for (double factor : {.25, .125, .0625, .03125}) {
+          const coordsW entry{b.x + factor * (a.x - b.x), b.y + factor * (a.y - b.y)};
+          const coordsW exit{b.x + factor * (c.x - b.x), b.y + factor * (c.y - b.y)};
+          unsigned char peak = 0;
+          if (safe(result.back(), entry, peak) && safe(entry, exit, peak) &&
+            safe(exit, c, peak) && peak <= original_peak)
+          {
+            result.push_back(entry); result.push_back(exit); rounded = true; break;
+          }
+        }
+      }
+      if (!rounded) {result.push_back(b);}
+    }
+    result.push_back(current.back()); current = std::move(result);
+  }
+  return current;
 }
 
 nav_msgs::msg::Path RegulatedPurePursuitController::linearInterpolation(
@@ -1246,6 +1309,14 @@ RegulatedPurePursuitController::dynamicParametersCallback(
   // Reject invalid new settings before mutating any controller state.
   for (const auto & parameter : parameters) {
     const auto name = parameter.get_name();
+    if (name == plugin_name_ + ".local_path_smoothing_iterations" &&
+      (parameter.get_type() != ParameterType::PARAMETER_INTEGER ||
+      parameter.as_int() < 0 || parameter.as_int() > 5))
+    {
+      result.successful = false;
+      result.reason = "local_path_smoothing_iterations must be between 0 and 5";
+      return result;
+    }
     if (name == plugin_name_ + ".rotation_accel_gain" ||
       name == plugin_name_ + ".rotation_damping_gain" ||
       name == plugin_name_ + ".tracking_angular_vel_limit")
@@ -1290,6 +1361,9 @@ RegulatedPurePursuitController::dynamicParametersCallback(
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
 
+    if (name == plugin_name_ + ".local_path_smoothing_iterations") {
+      local_path_smoothing_iterations_ = static_cast<int>(parameter.as_int());
+    }
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == plugin_name_ + ".inflation_cost_scaling_factor") {
         if (parameter.as_double() <= 0.0) {

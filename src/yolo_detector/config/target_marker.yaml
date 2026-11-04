@@ -1,0 +1,15 @@
+/**:
+  ros__parameters:
+    detection_topic: yolo/detections
+    camera_info_topic: front_camera/camera_info
+    cloud_topic: livox/lidar
+    found_topic: targets/found
+    request_topic: targets/request
+    marker_topic: targets/markers
+    map_frame: map
+    sensor_timeout_s: 1.5
+    sync_tolerance_s: 0.15
+    min_lidar_points: 3
+    max_depth_spread_m: 0.5
+    track_distance_m: 1.0
+    targets_file: ""

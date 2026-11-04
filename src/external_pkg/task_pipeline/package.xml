@@ -3,7 +3,7 @@
 <package format="3">
   <name>task_pipeline</name>
   <version>0.1.0</version>
-  <description>Shared YAML task goals for the navigation task pipeline.</description>
+  <description>Queued primitive Action dispatch, MQTT ingress and topic example publishers.</description>
   <maintainer email="todo@example.com">todo</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
@@ -11,22 +11,12 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-paho-mqtt</exec_depend>
+  <exec_depend>task_interfaces</exec_depend>
+  <exec_depend>yolo_detector</exec_depend>
   <exec_depend>patrol_node</exec_depend>
-  <exec_depend>execute_task_server</exec_depend>
-  <exec_depend>msg_set_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>action_msgs</exec_depend>
-  <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>sensor_msgs_py</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
-  <exec_depend>lifecycle_msgs</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
-  <exec_depend>tf2_ros_py</exec_depend>
   <export>
     <build_type>ament_python</build_type>
   </export>
