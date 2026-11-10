@@ -1172,11 +1172,40 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
   bool found_goal = false;
   auto goal_end = global_plan_.poses.begin();
   geometry_msgs::msg::PoseStamped goal;
+  // Keep the entire footprint inside the rolling costmap. A center point on
+  // its edge passes worldToMap(), but the path selector rejects its footprint.
+  const auto footprint = localGoalFootprint();
+  const auto footprint_inside_map = [this, &footprint](double x, double y, double heading) {
+      const double c = std::cos(heading);
+      const double s = std::sin(heading);
+      for (const auto & vertex : footprint) {
+        unsigned int mx, my;
+        if (!costmap_->worldToMap(x + c * vertex.x - s * vertex.y,
+          y + s * vertex.x + c * vertex.y, mx, my))
+        {
+          return false;
+        }
+      }
+      return true;
+    };
   auto it = global_plan_.poses.begin();
   for (; it != global_plan_.poses.end(); ++it)
   {
     unsigned int cx, cy;
     if (!costmap_->worldToMap(it->pose.position.x, it->pose.position.y, cx, cy))
+    {
+      break;
+    }
+    const auto next = std::next(it);
+    const auto & previous = it == global_plan_.poses.begin() ? robot_pose : *std::prev(it);
+    const double incoming = std::atan2(
+      it->pose.position.y - previous.pose.position.y,
+      it->pose.position.x - previous.pose.position.x);
+    const double outgoing = next == global_plan_.poses.end() ? incoming : std::atan2(
+      next->pose.position.y - it->pose.position.y,
+      next->pose.position.x - it->pose.position.x);
+    if (!footprint_inside_map(it->pose.position.x, it->pose.position.y, incoming) ||
+      !footprint_inside_map(it->pose.position.x, it->pose.position.y, outgoing))
     {
       break;
     }

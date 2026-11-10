@@ -49,13 +49,18 @@ def validate(data):
         raise ValueError('task_id must be one of 140, 141, 142, 143, 145 (integer)')
     if not isinstance(cancel, bool):
         raise ValueError('cancel must be a boolean')
-    out = dict(task_id=task_id, cancel=cancel, targets=[], waypoints=[], center=[],
+    out = dict(task_id=task_id, mission_seq_id=0, cancel=cancel, targets=[], waypoints=[], center=[],
                length_m=0., width_m=0., yaw_deg=0., gait_speed=0, air_route=0)
     if cancel:
         return out
     unknown = set(data) - set(out)
     if unknown:
         raise ValueError('unsupported task fields: ' + ', '.join(sorted(unknown)))
+    mission_seq_id = data.get('mission_seq_id', 0)
+    if (isinstance(mission_seq_id, bool) or not isinstance(mission_seq_id, int) or
+            not 0 <= mission_seq_id <= 255):
+        raise ValueError('mission_seq_id must be a uint8 integer (0..255)')
+    out['mission_seq_id'] = mission_seq_id
     for key in ('gait_speed', 'air_route'):
         value = data.get(key, 0)
         if isinstance(value, bool) or not isinstance(value, int) or not -32768 <= value <= 32767:
@@ -93,7 +98,7 @@ def to_message(data):
 def from_message(task):
     return validate({key: list(getattr(task, key)) if key in ('targets', 'waypoints', 'center')
                      else getattr(task, key) for key in
-                     ('task_id', 'cancel', 'targets', 'waypoints', 'center',
+                     ('task_id', 'mission_seq_id', 'cancel', 'targets', 'waypoints', 'center',
                       'length_m', 'width_m', 'yaw_deg', 'gait_speed', 'air_route')})
 
 

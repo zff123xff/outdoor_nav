@@ -120,6 +120,8 @@ protected:
     const geometry_msgs::msg::PoseStamped & robot_pose);
   virtual bool isRetainedPathPoseSafe(double x, double y, double heading)
   {return !inCollision(x, y, heading);}
+  virtual std::vector<geometry_msgs::msg::Point> localGoalFootprint() const
+  {return costmap_ros_->getRobotFootprint();}
   bool prefer_supplied_path_{true};
   int local_path_smoothing_iterations_{2};
   /**

@@ -219,7 +219,7 @@ class PipelineDispatcher(Node):
         status = TaskStatus(task_id="0", progress=0, failures=0,
                             param1=0.0, param2=0.0, param3=0.0)
         if self.current:
-            status.task_id = str(self.current.task_id)
+            status.task_id = str(self.current.mission_seq_id)
             status.progress = max(1, self.progress)
             status.failures = getattr(self, "failures", 0)
         self.status_pub.publish(status)

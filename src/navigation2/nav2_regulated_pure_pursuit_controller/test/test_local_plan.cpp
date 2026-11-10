@@ -63,11 +63,24 @@ public:
     footprint[3].x = -.4; footprint[3].y = .27;
     return checker.footprintCostAtPose(x, y, heading, footprint) < 254;
   }
+  std::vector<geometry_msgs::msg::Point> localGoalFootprint() const override
+  {
+    std::vector<geometry_msgs::msg::Point> footprint(4);
+    footprint[0].x = .4; footprint[0].y = .27;
+    footprint[1].x = .4; footprint[1].y = -.27;
+    footprint[2].x = -.4; footprint[2].y = -.27;
+    footprint[3].x = -.4; footprint[3].y = .27;
+    return footprint;
+  }
   uint64_t selectedRouteId() const {return path_hysteresis_.currentId();}
   double traversalWeight() const {return planner_->w_traversal_cost_;}
   double lengthWeight() const {return planner_->w_euc_cost_;}
-  void configurePathSelection(bool enabled, double interval = 2.)
-  {path_hysteresis_.enabled = enabled; path_hysteresis_.min_switch_interval = interval;}
+  void configurePathSelection(bool enabled, double interval = 2., bool obstacle_only = false)
+  {
+    path_hysteresis_.enabled = enabled;
+    path_hysteresis_.min_switch_interval = interval;
+    path_hysteresis_.switch_only_on_obstacle = obstacle_only;
+  }
 
   void configureHeading(bool stateful = true)
   {
@@ -102,6 +115,28 @@ TEST(LocalPlanRegression, PassedStartOutsideRollingMapDoesNotDiscardForwardPath)
   ASSERT_FALSE(local.poses.empty());
   EXPECT_GT(local.poses.back().pose.position.x, robot.pose.position.x);
   EXPECT_LT(local.poses.back().pose.position.x, 16.0);
+}
+
+TEST(LocalPlanRegression, LongClearGuideKeepsFootprintInsideRollingMap)
+{
+  nav2_costmap_2d::Costmap2D costmap(100, 100, 0.1, 0.0, 0.0, 0);
+  LocalPlanController controller(&costmap);
+  controller.configurePathSelection(true, 2., true);
+  nav_msgs::msg::Path global;
+  global.header.frame_id = "map";
+  for (int i = 0; i <= 20; ++i) {
+    geometry_msgs::msg::PoseStamped point;
+    point.pose.position.x = 5.0 + i * 0.25;
+    point.pose.position.y = 5.0;
+    point.pose.orientation.w = 1.0;
+    global.poses.push_back(point);
+  }
+  controller.setPlan(global);
+  auto local = controller.getLocalPlan(global.poses.front());
+  ASSERT_FALSE(local.poses.empty());
+  EXPECT_GT(local.poses.back().pose.position.x, 8.0);
+  EXPECT_LE(local.poses.back().pose.position.x, 9.5);
+  EXPECT_EQ(controller.selectedRouteId(), 1u);
 }
 
 TEST(LocalPlanRegression, BlockedCostmapStillRejectsEveryLocalGoal)

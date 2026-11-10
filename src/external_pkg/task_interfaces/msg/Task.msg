@@ -1,5 +1,7 @@
 # Public command. Fixed IDs: 140 point, 141 patrol, 142 area, 143 inspection, 145 multi-point.
 uint16 task_id
+# Per-mission sequence number reported as TaskStatus.task_id (0..255).
+uint8 mission_seq_id
 bool cancel
 string[] targets
 # Repeated [latitude, longitude, altitude] GPS triplets (degrees, degrees, metres).

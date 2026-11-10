@@ -8,6 +8,7 @@
 
 - [开发交接总览](DEVELOPER_HANDOVER.md)：新开发者首先阅读；包括已知实现差异和验证边界。
 - [任务接口与执行](TASK_PIPELINE.md)：固定任务编号、字段、状态反馈、忙碌拒收和取消语义。
+- [任务链路排障手册](TASK_FLOW_DEBUGGING.md)：按现象排障（发不进 / 不动 / 崩溃 / 代价地图不显示），含入口断点、dispatcher 状态机、ABI 构建一致性与环境陷阱。
 - [ROS 基元发布示例](PRIMITIVE_ROS_EXAMPLES.md)：ROS 2 CLI 请求、取消和反馈查看。
 - [仿真目标巡检](SIMULATION_TARGETS.md)：目标分配、Marker 输入、到达事件和 UDP 对接。
 - [整体数据链路](DATA_FLOW.md)：系统模块图及接口边界。
