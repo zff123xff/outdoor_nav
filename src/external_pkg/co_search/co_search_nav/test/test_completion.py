@@ -7,8 +7,9 @@ from co_search_nav.executor import CoSearchExecutor
 
 def node():
     return NS(task={'co_search': {'exhaustion_confirmations': 3}}, state='planning',
-              finishing=None, enabled=True, metrics={'observed_ratio': .65},
-              exhaustion_count=0, exhaustion_cloud=None, navigation_ready=lambda: True,
+              finishing=None, enabled=True, suspend_requested=False, metrics={'observed_ratio': .65},
+              coverage_threshold=0., search_started=None, exhaustion_count=0, exhaustion_cloud=None,
+              navigation_ready=lambda: True,
               stop=Mock())
 
 

@@ -86,6 +86,7 @@ public:
 
     // Parameters shared among nodes
     static double vm_, am_, yd_, ydd_, w_dir_;
+    static double path_turn_penalty_s_per_pi_, path_corner_penalty_s_, path_reverse_penalty_s_, path_detour_penalty_s_per_ratio_;
     static shared_ptr<Astar> astar_;
     static shared_ptr<RayCaster> caster_;
     static shared_ptr<SDFMap> map_;

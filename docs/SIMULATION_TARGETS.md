@@ -1,79 +1,79 @@
-# 区域搜索检测与仿真标记
+# 143 目标观察巡检
 
-## 生命周期与配置
+143 只用于观察并发布到达事件，不控制武器、不发出打击命令。当前代码有两种输入/执行路径；完整 launch
+优先级和板卡已知冲突见 [开发交接总览](DEVELOPER_HANDOVER.md)。
 
-`task_pipeline` 管理 `simulation_target_marker` 子进程：当前区域搜索的 Action 服务就绪并发送任务时启动；任务成功、失败、拒绝或取消完成时停止，调度器退出时也清理子进程。子进程异常退出会触发当前搜索取消，并将任务报告为失败。排队任务及其他三类基元不启动该节点。
+## A. 分配目标巡检
 
-`launch_sim.sh` 自动启用 dispatcher 的 `simulation_targets` 参数；实机入口默认关闭。YOLO 推理节点仍独立启动，以便使用目标机器的 GPU Python 环境：
+输入 `/<ns>/targets/assigned`，类型 `task_interfaces/msg/TargetArray`。每个目标包含正且唯一的
+`target_id` 和 `target_position` (`geometry_msgs/Point`)；坐标为相同导航原点下的 map ENU，米。143 Action
+启动时快照目标批次，按新鲜机器人位置选最近目标，接近到 10 m 内，转向目标并连续确认距离、朝向和停稳后，
+发布 `targets/inspection_arrived`。默认参数为站距 9 m、距离上限 10 m、朝向误差 0.15 rad、线/角速度阈值
+0.05、停稳 0.5 s、到达后停留 2.5 s。每个目标失败后继续其他目标，最终汇总失败计数。
 
-```bash
-source "${CODEX_HOME:-$HOME/.codex}/ros/setup.bash"
-source install/local_setup.bash
-ros2 launch yolo_detector yolo.launch.py namespace:=robot_1 config_file:=/absolute/path/to/yolo.yaml
-```
-
-算法唯一运行配置为 `src/external_pkg/co_search/co_search_nav/config/area_search.yaml`。任务示例在 `task_pipeline/config/examples/gps/` 和 `examples/enu/`；检测投影配置在 `yolo_detector/config/target_marker.yaml`。
-
-## 检测类别
-
-`task_interfaces/msg/Task` 新增 `string[] targets`，如 `targets: [bottle, chair]`。类别必须是模型支持的名称或编号字符串；空列表代表全部类别。取消消息忽略此字段。
-
-dispatcher 在任务出队成为当前任务时原子改写 `/tmp/outdoor_nav/robot_1/detection_targets.yaml`（可通过 `targets_file` 参数自定义，所有消费者须一致）：
-
-```yaml
-task_id: area_demo
-targets: [bottle, chair]
-```
-
-YOLO 每隔 1 秒读取一次文件，过滤检测结果与调试图；无效文件保留上一有效类别并报错。排队任务不提前改变类别。任务结束后保留最后一次选择，下个任务开始时覆盖。
-
-## 三维定位与目标 ID
-
-节点订阅 `yolo/detections`、`front_camera/camera_info`、`livox/lidar` 及 `area_search/active`。需要真实相机内参、畸变参数，以及相机光学坐标系、雷达、地图之间的 TF；图像与雷达时间戳必须可比。默认时间差不超过 0.15 秒，传感器超时 1.5 秒。
-
-将实际雷达点按对应采样时刻的 TF 投影到图像，在检测框中筛选至少 3 个一致深度点，再转为地图 ENU，最后使用 `nav2_input_bridge` 的导航原点转换成经纬高。缺少有效标定、深度、TF 或原点时不发布伪造坐标。GPS 高度等于导航原点高度加 ENU up。
-
-同类别目标按地图三维距离关联（默认 1 米），一帧内一对一匹配。新目标从 ID 1 递增，同一目标跨帧保持 ID；每次区域任务新建节点，因此 ID 在该任务内有效。每个目标最多每秒发布一次，首次立即发布。
-
-## 统一事件消息
-
-发现与请求均为 `task_interfaces/msg/TargetEvent`：
+输出类型 `task_interfaces/msg/InspectionArrival`：
 
 ```text
-std_msgs/Header header
-sensor_msgs/NavSatFix position
-string target_type
+string task_id
 uint64 target_id
-string command
+geometry_msgs/Point target_position
+geometry_msgs/Point robot_position
+float64 distance_m
+float64 heading_error_rad
 ```
 
-`position.latitude/longitude` 单位度，`altitude` 单位米，`header` 为观测时间与地图坐标系；位置字段仍是 GPS，不能按 header 将其当成 ENU。`command` 为 `target found` 或 `request shoot`，消息提供 `TARGET_FOUND`、`REQUEST_SHOOT` 常量。
+配置在 `src/external_pkg/task_pipeline/config/inspection.yaml`。同一批次运行中新增分配不重置当前快照；
+取消/子导航超时需要等待子 Action 终态后才释放任务通道。
 
-| 话题（robot_1） | 类型 | 发送方与用途 |
-| --- | --- | --- |
-| `/robot_1/task` | `task_interfaces/msg/Task` | 外部或示例节点下发含 targets 的任务 |
-| `/robot_1/yolo/detections` | `yolo_interfaces/msg/DetectionArray` | YOLO 发布二维检测 |
-| `/robot_1/targets/found` | `task_interfaces/msg/TargetEvent` | 管理节点发布已发现目标 |
-| `/robot_1/targets/request` | `task_interfaces/msg/TargetEvent` | 外部发送仿真标记请求 |
-| `/robot_1/targets/markers` | `visualization_msgs/msg/MarkerArray` | 管理节点发布 RViz 标记 |
+## B. 区域搜索后观察 Marker
 
-发现、请求、标记话题均 RELIABLE、VOLATILE、depth 10。目标请求只接受当前任务中最近观测到的已知 ID 和仍选中的类别，坐标使用节点已存观测；未知或过期 ID 忽略。`request shoot` 仅将 RViz 球形标记由绿色改为红色，无实体打击输出。请求中的 GPS 不用于控制任何设备。
+`search_inspection_executor` 提供 `search_inspection` Action。该流程调用现有 `area_search` 搜索 Action；收到
+新鲜且在 map 坐标系中的 `targets/markers` MarkerArray 后暂停区域搜索，将目标交给目标巡检子 Action，完成
+到达上报和停留后恢复同一张搜索地图。按距离合并去重，避免重复巡检同一位置。
+
+`inspection.yaml` 的当前值：`marker_max_age_s=1.5`、`observation_merge_m=1.5`、
+`search_service_timeout_s=15`。`SearchInspectionExecutor` 在 `inspection_search_mode` 开启时由 launch 启动；
+`search_target_visitor` 使用隔离的 `targets/search_assigned`，不覆盖外部 `targets/assigned`。
+
+**板卡仿真 launch 的已知选择问题：** `simulation.launch.py` 固定将 `simulation_targets` 与
+`target_interaction_enabled` 传为 true。Dispatcher 的条件先匹配仿真目标模式，再考虑
+`inspection_search_mode`；所以仿真入口下仅加 `inspection_search_mode:=true` 仍会走 A 类仿真目标交互，
+不保证走本节的 `search_inspection` Action。修正条件并在板卡验证前，不应把新模式描述成仿真入口可用。
+
+## YOLO 三维观测链
+
+`yolo_detector` 先发布 `yolo/detections` 2D 检测。区域搜索任务 142/143 的 `targets` 写入共用类别 YAML；
+仿真 `simulation_target_marker` 订阅二维检测、CameraInfo 和 Livox 点云，使用图像框内的雷达深度点估计 map
+位置。有效结果发布 `targets/markers` (`visualization_msgs/MarkerArray`) 和 `targets/found`
+(`task_interfaces/msg/TargetEvent`)。Marker 的 `pose.position` 是地图坐标米；`targets/found.position` 是
+GPS/NavSatFix。二者接口和坐标含义不同。
+
+YOLO 使用 `yolo.yaml` 的 YAML 相机内参和 TF 相机外参。当前投影窗 1 s、同步容差 0.15 s、传感器时效 1.5 s、
+至少 3 个雷达点、最大深度离散 0.5 m。实际可用性依赖图像 header、CameraInfo/内参、TF、点云时间戳和导航
+原点一致；具体 TF 错误诊断见 [区域搜索点云缓存与 TF 时间](AREA_SEARCH_CLOUD_WINDOW.md)。
+
+## 示例：输入目标批次
+
+以下直接操作 ROS topic 时需与机器人使用相同 domain 和 namespace：
 
 ```bash
-# 先观察真实发现消息，取其中 target_id，再请求仿真标记。
-ros2 topic echo /robot_1/targets/found task_interfaces/msg/TargetEvent
-ros2 topic pub --once -w 1 /robot_1/targets/request task_interfaces/msg/TargetEvent \
-  '{target_id: 1, command: "request shoot"}'
+ros2 topic pub --once -w 1 /robot_1/targets/assigned task_interfaces/msg/TargetArray \
+  '{targets: [{target_id: 1, target_position: {x: 20.0, y: 0.0, z: 0.0}}]}'
+ros2 topic echo /robot_1/targets/inspection_arrived task_interfaces/msg/InspectionArrival
+ros2 topic pub --once -w 1 /robot_1/task task_interfaces/msg/Task '{task_id: 143}'
 ```
 
-四类任务下发命令见 [PRIMITIVE_ROS_EXAMPLES.md](PRIMITIVE_ROS_EXAMPLES.md)。在区域搜索示例消息中增加 `targets: [bottle]` 即仅检测该类别。外部发送端须重编译新版 `task_interfaces`。
+区域搜索巡检请求需要带 `center`、`length_m`、`width_m` 等区域字段；仅当 dispatcher 实际选择
+`search_inspection` Action 时才会使用这些字段。当前仿真入口冲突下需先修复 launch/dispatcher。
 
-## 验证
+## 可选 UDP 桥
+
+`inspection_udp_bridge` 默认关闭，与传感器/速度 MavrosBridge 使用不同协议和端口。启用示例：
 
 ```bash
-source "${CODEX_HOME:-$HOME/.codex}/ros/setup.bash"
-source install/local_setup.bash
-ROS_DOMAIN_ID=179 PYTHONNOUSERSITE=1 timeout 50s python3 tests/simulation_targets_smoke.py
+bash launch_sim.sh robot_namespace:=robot_1 inspection_udp:=true \
+  inspection_input_port:=9101 inspection_ue_address:=192.168.1.186 inspection_output_port:=9001
 ```
 
-该测试使用 CPU 假推理模型和真实 ROS 消息，覆盖任务类别文件、1 秒重读、图像/点云/TF 投影、GPS、稳定 ID、仿真请求、排队隔离及 dispatcher 子进程启停。实际 GPU engine、相机雷达标定和定位精度需在目标仿真部署中验证。
+UE 至少要按 bridge 源码约定发送目标数据报；ROS 到达事件会向配置地址/端口转发。UDP 不提供确认/重发，
+需由实际 UE 端验证数据格式和网络收发。ROS topic 直接对接时不需要启用该桥。

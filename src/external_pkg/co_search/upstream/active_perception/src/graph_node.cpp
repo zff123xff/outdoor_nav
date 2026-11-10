@@ -11,9 +11,53 @@ double ViewNode::am_;
 double ViewNode::yd_;
 double ViewNode::ydd_;
 double ViewNode::w_dir_;
+double ViewNode::path_turn_penalty_s_per_pi_;
+double ViewNode::path_corner_penalty_s_;
+double ViewNode::path_reverse_penalty_s_;
+double ViewNode::path_detour_penalty_s_per_ratio_;
 shared_ptr<Astar> ViewNode::astar_;
 shared_ptr<RayCaster> ViewNode::caster_;
 shared_ptr<SDFMap> ViewNode::map_;
+
+namespace
+{
+double pathSimplicityPenalty(const vector<Vector3d>& path)
+{
+    if (path.size() < 3)
+        return 0.0;
+
+    constexpr double corner_angle = 30.0 * M_PI / 180.0;
+    constexpr double reverse_angle = 135.0 * M_PI / 180.0;
+    double length = 0.0;
+    double turn_sum = 0.0;
+    int corners = 0;
+    int reversals = 0;
+    for (size_t i = 1; i < path.size(); ++i)
+        length += (path[i].head<2>() - path[i - 1].head<2>()).norm();
+
+    for (size_t i = 1; i + 1 < path.size(); ++i)
+    {
+        const Eigen::Vector2d incoming = (path[i] - path[i - 1]).head<2>();
+        const Eigen::Vector2d outgoing = (path[i + 1] - path[i]).head<2>();
+        const double in_length = incoming.norm();
+        const double out_length = outgoing.norm();
+        if (in_length < 1e-3 || out_length < 1e-3)
+            continue;
+        const double cosine = std::max(-1.0, std::min(1.0, incoming.dot(outgoing) / (in_length * out_length)));
+        const double angle = std::acos(cosine);
+        turn_sum += angle;
+        corners += angle >= corner_angle;
+        reversals += angle >= reverse_angle;
+    }
+
+    const double direct = (path.back().head<2>() - path.front().head<2>()).norm();
+    const double detour_ratio = direct > 1e-3 ? std::max(0.0, length / direct - 1.0) : 0.0;
+    return std::max(0.0, ViewNode::path_turn_penalty_s_per_pi_) * turn_sum / M_PI +
+           std::max(0.0, ViewNode::path_corner_penalty_s_) * corners +
+           std::max(0.0, ViewNode::path_reverse_penalty_s_) * reversals +
+           std::max(0.0, ViewNode::path_detour_penalty_s_per_ratio_) * detour_ratio;
+}
+}  // namespace
 
 // Graph node for viewpoints planning
 ViewNode::ViewNode(const Vector3d &p, const double &y)
@@ -90,17 +134,21 @@ double ViewNode::computeCost(const Vector3d &p1, const Vector3d &p2, const doubl
     // 2. 考虑速度方向变化的代价
     if (v1.norm() > 1e-3)
     {
-        Vector3d dir = (p2 - p1).normalized(); //目标方向
-        Vector3d vdir = v1.normalized();       //速度方向
-        double diff = acos(vdir.dot(dir));     //计算速度方向和目标方向的夹角
-        pos_cost += w_dir_ * diff;             // 乘一个权重 加到位置代价
+        const Vector3d delta = p2 - p1;
+        if (delta.head<2>().norm() > 1e-6)
+        {
+            const Vector3d dir = delta.normalized(); //目标方向
+            const Vector3d vdir = v1.normalized();   //速度方向
+            const double diff = acos(std::max(-1.0, std::min(1.0, vdir.dot(dir)))); //夹角数值钳制，避免舍入误差产生 NaN
+            pos_cost += w_dir_ * diff; // 乘一个权重 加到位置代价
+        }
     }
 
     // 3. 航向变化的代价
     double diff = fabs(y2 - y1);       // 计算航向角度差的绝对值
     diff = min(diff, 2 * M_PI - diff); // 考虑2派周期， 得到的是最短旋转路径
     double yaw_cost = diff / yd_;      // 用差值 除 最大航向角速度
-    return pos_cost + yaw_cost;
+    return pos_cost + yaw_cost + pathSimplicityPenalty(path);
 }
 
 //FIXME： 针对枪声定位的输入、这里以这个角度进行代价计算

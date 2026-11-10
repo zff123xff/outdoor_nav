@@ -58,6 +58,10 @@ FrontierFinder::FrontierFinder(const EDTEnvironment::Ptr& edt, rclcpp::Node::Sha
                                                                                 : node->declare_parameter<double>("frontier/candidate_rmin", 1.0);
     candidate_rnum_            = node->has_parameter("frontier/candidate_rnum") ? node->get_parameter("frontier/candidate_rnum").as_int()
                                                                                 : node->declare_parameter<int>("frontier/candidate_rnum", 3);
+    max_candidate_samples_      = node->has_parameter("frontier/max_candidate_samples")
+                                     ? node->get_parameter("frontier/max_candidate_samples").as_int()
+                                     : node->declare_parameter<int>("frontier/max_candidate_samples", 24);
+    max_candidate_samples_      = std::max(1, max_candidate_samples_);
     down_sample_               = node->has_parameter("frontier/down_sample") ? node->get_parameter("frontier/down_sample").as_int()
                                                                              : node->declare_parameter<int>("frontier/down_sample", 3);
     min_visib_num_             = node->has_parameter("frontier/min_visib_num") ? node->get_parameter("frontier/min_visib_num").as_int()
@@ -1413,12 +1417,22 @@ void FrontierFinder::sampleViewpoints(Frontier& frontier, const std::vector<std:
 
 void FrontierFinder::sampleViewpoints(Frontier& frontier)
 {
-    // 在圆形区域采样视点
-    // 外环控制采样半径
-    for (double rc = candidate_rmin_, dr = (candidate_rmax_ - candidate_rmin_) / candidate_rnum_; rc <= candidate_rmax_ + 1e-3; rc += dr)
-        // 内循环 控制角度（phi），在 [-π, π) 范围内采样圆周上的点
-        for (double phi = -M_PI; phi < M_PI; phi += candidate_dphi_)
-        {
+    if (frontier.filtered_cells_.empty() || candidate_rnum_ <= 0 || candidate_dphi_ <= 0.0)
+        return;
+
+    // 对径向环和角度采样点展平后均匀抽样，限制每个前沿的候选评估次数。
+    const int ring_count = candidate_rnum_ + 1;
+    const int angles_per_ring = std::max(1, static_cast<int>(std::ceil(2.0 * M_PI / candidate_dphi_)));
+    const int total_samples = ring_count * angles_per_ring;
+    const int sample_stride = std::max(1, static_cast<int>(std::ceil(
+        static_cast<double>(total_samples) / max_candidate_samples_)));
+    const double dr = (candidate_rmax_ - candidate_rmin_) / candidate_rnum_;
+    for (int sample_index = 0; sample_index < total_samples; sample_index += sample_stride)
+    {
+        const int ring = sample_index / angles_per_ring;
+        const int angle_index = sample_index % angles_per_ring;
+        const double rc = candidate_rmin_ + ring * dr;
+        const double phi = -M_PI + angle_index * (2.0 * M_PI / angles_per_ring);
             // 以边界簇平均位置为中心， 画一圈圈同心圆
             double cphi = 0.0;
             double sphi = 0.0;

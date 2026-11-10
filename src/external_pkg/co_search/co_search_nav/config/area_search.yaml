@@ -1,5 +1,8 @@
-# Sole native co-search runtime configuration.
+# 当前原生 co-search 搜索配置：激光点云输入，本地搜索与规划。
+# 地图 XY 边界、机器人数量、资源路径等由 configuration.py 按任务生成，不在此重复配置。
+# 旧相机内参、深度图处理和无引用的状态机参数已移除；相机内参由 yolo_detector/config/yolo.yaml 管理。
 search_controller: co_search
+search_strategy: parallel_lines  # co_search or parallel_lines
 robot_namespace: robot_1
 agent_id: robot_1
 mission_id: co_search_rectangle_demo
@@ -14,6 +17,7 @@ rectangle:
   yaw_deg: 0.0
 map_frame: '{namespace}/map'
 base_frame: '{namespace}/base_link'
+odom_frame: '{namespace}/odom'  # Used only when incoming odometry header.frame_id is empty
 controller_id: FollowPath
 goal_checker_id: area_entry_goal_checker
 topics:
@@ -22,57 +26,62 @@ topics:
 options:
   sensor_timeout_s: 3.0
 co_search:
-  plan_period_s: 1.5
+  parallel_lines:
+    lane_spacing_m: 10.0
+    boundary_margin_m: 0.8
+    waypoint_tolerance_m: 0.5
+  coverage_threshold: 0.99  # observed task cells / all task cells; 0 disables early completion
+  timeout_coefficient_s_per_m2: 1.0  # active search seconds > coefficient * area, plus coverage threshold
+  entry:
+    inset_m: 0.8  # inset rectangle edges; must exceed clearance_m
+    sample_spacing_m: 0.5
+    clearance_m: 0.7  # circular endpoint/segment clearance against native occupied columns
+    max_plan_attempts: 4  # per planning cycle
+    retry_cooldown_s: 5.0
+    timeout_s: 30.0  # continuous time without a valid entry plan
+    max_execution_failures: 4  # stop after this many aborted entry FollowPath goals
+  cloud_filter:
+    enable_x_filter: false  # false retains points in every direction before voxel filtering
+    min_x_m: 3.0  # original pointcloud frame, not radial distance
+    max_x_m: 40.0
+    voxel_size_m: 0.2
+    accumulation_window_s: 1.0  # rolling window of timestamp-transformed clouds
+    min_accumulated_points: 1  # distinct downsampled points across that window
+    max_future_offset_s: 0.5  # maximum allowed lead over ROS time
+    tf_lookup_timeout_s: 2.0  # wait for TF at the cloud timestamp; does not use a stale transform
+  plan_period_s: 5.0
   map_period_s: 0.2
   path_spacing_m: 0.1
   startup_timeout_s: 60.0
   parameters:
     simulation: true
-    sdf_map/resolution: 0.1
-    sdf_map/map_size_x: 30.0
-    sdf_map/map_size_y: 30.0
+    sdf_map/resolution: 0.2
     sdf_map/map_size_z: 2.0
     sdf_map/obstacles_inflation: 0.199
     sdf_map/local_bound_inflate: 0.5
     sdf_map/local_map_margin: 50
-    sdf_map/ground_height: -0.01
-    sdf_map/min_obstacle_height: 0.4
-    sdf_map/max_obstacle_height: 0.6
+    # Point-cloud obstacle height is filtered in base_link; use a zero ground reference.
+    sdf_map/ground_height: 0.31
+    sdf_map/min_obstacle_height: 0.8
+    sdf_map/max_obstacle_height: 3.0
     sdf_map/default_dist: 0.5
-    sdf_map/p_hit: 0.7
-    sdf_map/p_miss: 0.4
+    sdf_map/p_hit: 0.8
+    sdf_map/p_miss: 0.1
     sdf_map/p_min: 0.12
     sdf_map/p_max: 0.99
-    sdf_map/p_occ: 0.69
-    sdf_map/min_ray_length: 0.1
-    sdf_map/max_ray_length: 4.0
+    sdf_map/p_occ: 0.8
+    sdf_map/max_ray_length: 8.0
     sdf_map/virtual_ceil_height: -10.0
     sdf_map/optimistic: true
     sdf_map/signed_dist: false
-    sdf_map/box_min_x: -5.0
-    sdf_map/box_min_y: -5.0
     sdf_map/box_min_z: 0.01
-    sdf_map/box_max_x: 5.0
-    sdf_map/box_max_y: 5.0
     sdf_map/box_max_z: 0.8
     sdf_map/no_drone_1: false
-    map_ros/cx: 324.0879821777344
-    map_ros/cy: 239.10362243652344
-    map_ros/fx: 385.69793701171875
-    map_ros/fy: 385.69793701171875
-    map_ros/depth_filter_maxdist: 5.0
-    map_ros/depth_filter_mindist: 0.1
-    map_ros/depth_filter_margin: 2
-    map_ros/k_depth_scaling_factor: 1000.0
-    map_ros/skip_pixel: 2
     map_ros/esdf_slice_height: 0.3
     map_ros/visualization_truncate_height: 1.0
     map_ros/visualization_truncate_low: 0.2
     map_ros/show_occ_time: false
     map_ros/show_esdf_time: false
-    map_ros/show_all_map: false
-    map_ros/global_map_pub_period_sec: 5.0
-    map_ros/frame_id: world
     map_ros/agent_footprint_clear_enable: true
     map_ros/ego_clear_radius: 0.75
     map_ros/ego_body_clear_radius: 0.75
@@ -83,7 +92,6 @@ co_search:
     map_ros/stuck_clear_radius_scale: 0.85
     map_ros/robot_frame_prefix: ''
     map_ros/lidar_frame: ''
-    map_ros/obstacle_source: cloud
     multi_map_manager/chunk_size: 500
     multi_map_manager/stamp_period_ms: 500
     multi_map_manager/chunk_timer_period_ms: 200
@@ -109,50 +117,6 @@ co_search:
     frontier_vis/voxel_size: 0.2
     frontier_vis/max_display_points: 30000
     frontier_vis/max_display_points_min: 200
-    fsm/thresh_replan1: 0.5
-    fsm/thresh_replan2: 1.5
-    fsm/thresh_replan3: 5.0
-    fsm/replan_skip_if_goal_unchanged: true
-    fsm/replan_min_goal_change: 0.5
-    fsm/replan_min_remaining_path: 1.5
-    fsm/replan_time: 0.05
-    fsm/sync_interval: 0.2
-    fsm/wait_delete_duration: 0.05
-    fsm/gain_thresh: 10
-    fsm/attempt_interval: 0.4
-    fsm/pair_opt_interval: 2.0
-    fsm/repeat_send_num: 1
-    fsm/swarm_traj_keepalive_s: 1.0
-    fsm/stop_debounce_s: 0.5
-    fsm/clear_resume_confirm_frames: 1
-    fsm/clear_resume_odom_min_dist: 3.0
-    fsm/swarm_conflict_resume_confirm_frames: 1
-    fsm/priority_resume_base_s: 1.0
-    fsm/priority_resume_dist_gain_s: 0.15
-    fsm/timeout_replan_base_s: 30.0
-    fsm/timeout_replan_dist_gain_s: 0.35
-    fsm/timeout_replan_max_s: 60.0
-    fsm/pair_conflict_cooldown: 6.0
-    fsm/pair_select_conflict_dist: 12.0
-    fsm/pair_select_first_grid_dist: 10.0
-    fsm/pair_select_conflict_weight: 5.0
-    fsm/pair_select_interval_weight: 1.0
-    fsm/pair_select_first_grid_weight: 6.0
-    fsm/pair_select_stamp_timeout: 1.5
-    fsm/final_online_stamp_thresh: 1.5
-    fsm/final_offline_stamp_thresh: 3.0
-    fsm/static_speed_thresh: 0.1
-    fsm/head_on_cos_thresh: -0.25
-    fsm/head_on_sticky_min_speed: 0.08
-    fsm/wait_trigger_ping_check_enable: false
-    fsm/wait_trigger_ping_interval: 1.0
-    fsm/wait_trigger_ping_thresh_ms: 100.0
-    fsm/wait_trigger_ping_target: 127.0.0.1
-    fsm/wait_trigger_quiet_enable: true
-    fsm/wait_trigger_quiet_state_period_s: 1.0
-    fsm/final_min_by_drones_factor: 4
-    fsm/final_return_load_margin: 2
-    fsm/final_return_vote_confirm_cycles: 3
     partitioning/min_unknown: 400
     partitioning/min_frontier: 50
     partitioning/min_free: 2500
@@ -189,23 +153,30 @@ co_search:
     exploration/am: 1.0
     exploration/yd: 0.6
     exploration/ydd: 1.5708
-    exploration/w_dir: 3.0
-    exploration/tsp_dir: $(find-pkg-share lkh_tsp_solver)/resource
-    exploration/mtsp_dir: $(find-pkg-share lkh_mtsp_solver)/resource
-    exploration/lkh_binary: co_search_lkh
-    exploration/drone_num: 1
-    exploration/drone_id: 1
+    exploration/w_dir: 30.0
     exploration/vis_drone_id: 1
     exploration/local_traj_radius: 6.0
     exploration/snn_path_resample_spacing: 0.5
-    exploration/snn_path_shorten_max_segment: 2.0
-    exploration/snn_path_shorten_angle_deg: 25.0
+    exploration/snn_path_shorten_max_segment: 3.0
+    exploration/snn_path_shorten_angle_deg: 45.0
     exploration/snn_path_rdp_epsilon: 0.35
     exploration/snn_path_rdp_max_epsilon: 1.0
-    exploration/snn_traj_max_waypoints: 24
+    exploration/snn_traj_max_waypoints: 12
+    exploration/path_turn_penalty_s_per_pi: 100.0  # 路径累计转角每180度增加的等效代价（秒）
+    exploration/path_corner_penalty_s: 100.0  # 每个大于等于30度的拐弯代价（秒）
+    exploration/path_reverse_penalty_s: 100.0  # 每个大于等于135度的急转/折返额外代价（秒）
+    exploration/path_detour_penalty_s_per_ratio: 0.01  # 绕行比例每增加1.0（多绕100%）的代价（秒）
+    exploration/min_path_length_m: 10.0  # prefer reachable planned routes at least 3 m long when available
     exploration/snn_fail_astar_trigger_count: 3
     exploration/viewpoint_arrived_dist_m: 0.55
     exploration/degenerate_goal_dist_m: 0.2
+    # 目标承诺（视点锁）：跨规划周期保持同一目标，抑制近似等价前沿间的来回切换。
+    # viewpoint_lock_sec 到期后强制重新决策一次；新目标代价须低于旧目标的
+    # (1 - switch_improve_ratio) 才能提前换目标。0 秒即关闭该机制。
+    exploration/viewpoint_lock_sec: 4.0
+    exploration/viewpoint_lock_max_dist_m: 4.0
+    exploration/viewpoint_lock_max_shift_m: 2.0
+    exploration/viewpoint_lock_switch_improve_ratio: 0.25
     exploration/near_split_enable: true
     exploration/near_split_dist: 10.0
     exploration/near_split_stamp_timeout: 1.5
@@ -235,7 +206,6 @@ co_search:
     exploration/target_failure_quarantine_cell_m: 0.5
     exploration/target_failure_quarantine_initial_sec: 1.0
     exploration/target_failure_quarantine_max_sec: 10.0
-    fsm/wait_map_update_retry_sec: 0.5
     exploration/liveness_enable: true
     exploration/stall_escape_after_waits: 6
     exploration/stall_escape_interval_sec: 2.0
@@ -245,7 +215,6 @@ co_search:
     exploration/dead_work_stall_sec: 10.0
     exploration/no_progress_stall_sec: 20.0
     exploration/stall_return_stagger_sec: 5.0
-    fsm/liveness_check_period_sec: 0.5
     exploration/anti_tailgate_enable: true
     exploration/anti_tailgate_heading_deg: 60
     exploration/anti_tailgate_sep_weight: 6.0
@@ -254,7 +223,6 @@ co_search:
     exploration/near_split_uncovered_bonus_min_scale: 0.4
     exploration/near_split_uncovered_bonus_density_gain: 0.8
     exploration/near_split_uncovered_bonus_occ_penalty: 0.25
-    exploration/dormant_check_period_ms: 120
     frontier/cluster_min: 100
     frontier/cluster_size_xy: 2.0
     frontier/cluster_size_z: 0.8
@@ -264,13 +232,14 @@ co_search:
     frontier/candidate_rnum: 3
     frontier/candidate_rmin: 1.0
     frontier/candidate_rmax: 2.0
+    frontier/max_candidate_samples: 24  # 每个前沿最多评估的视点位置数；降低视点生成耗时
     frontier/down_sample: 3
     frontier/min_visib_num: 10
     frontier/min_view_finish_fraction: 0.2
     perception_utils/top_angle: 0.56125
     perception_utils/left_angle: 0.69222
     perception_utils/right_angle: 0.68901
-    perception_utils/max_dist: 4.5
+    perception_utils/max_dist: 8.0  # 视点收益估计的可视距离，需与实际入图范围一致
     perception_utils/vis_dist: 1.0
     heading_planner/yaw_diff: 0.5236
     heading_planner/half_vert_num: 5
@@ -305,19 +274,16 @@ co_search:
     static_collision.safety_margin: 0.05
     static_collision.arrival_tol_time: 0.1
     static_collision.nav_z: 0.3
-    static_collision.min_bad_frames: 3
-    static_collision.replan_cooldown: 0.2
     search/max_tau: 1.0
     search/init_max_tau: 1.0
     search/max_vel: 1.0
     search/vel_margin: 0.25
     search/max_acc: 1.0
     search/w_time: 10.0
-    search/horizon: 6.0
+    search/horizon: 20.0
     search/lambda_heu: 10.0
     search/resolution_astar: 0.025
     search/time_resolution: 0.8
-    search/margin: 0.2
     search/allocate_num: 100000
     search/check_num: 10
     search/optimistic: false
@@ -333,8 +299,6 @@ co_search:
     astar/dt: 0.1
     astar/num_steering_angles: 15
     astar/num_speeds: 7
-    astar/vehicle_length: 1.05
-    astar/vehicle_width: 0.78
     optimization/ld_smooth: 5.0
     optimization/ld_dist: 10.0
     optimization/ld_feasi: 2.0
@@ -361,18 +325,9 @@ co_search:
     optimization/max_iteration_time2: 0.015
     optimization/max_iteration_time3: 0.003
     optimization/max_iteration_time4: 0.003
-    bspline/limit_vel: 1.0
-    bspline/limit_acc: 1.0
-    bspline/limit_ratio: 1.1
     snn/wave_robot_radius: 2.0
     snn/dead_zone_planning_margin: 0.3
     snn/obstacle_close_kernel: 3
-    ppu/enable_path_planning: false
-    ppu/enable_region_allocation: false
-    ppu/path_host: 192.168.137.62
-    ppu/path_port: 19600
-    ppu/region_host: 192.168.137.62
-    ppu/region_port: 19600
     swarm_collision/robot_radius: 0.75
     swarm_collision/safe_margin: 0.5
     swarm_collision/horizon: 4.0
@@ -394,8 +349,6 @@ co_search:
     swarm_collision/static_delay_gain: 1.6
     allocate/enable_cross_region_takeover: false
     allocate/takeover_idle_sec: 6.0
-    allocate/region_rows: 1
-    allocate/region_cols: 1
     allocate/use_snn_region_assignment: true
     allocate/snn_tau: 2.8
     allocate/snn_dt: 0.2

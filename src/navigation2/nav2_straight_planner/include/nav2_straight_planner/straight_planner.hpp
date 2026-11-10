@@ -40,7 +40,7 @@ private:
   void cancelFollowPath();
   nav_msgs::msg::Path buildStraightPath(const geometry_msgs::msg::PoseStamped &, const geometry_msgs::msg::PoseStamped &) const;
   std::string global_frame_, robot_frame_, controller_id_, goal_checker_id_, action_name_;
-  double path_step_m_, planning_period_s_;
+  double path_step_m_, planning_period_s_, max_path_length_m_;
   rclcpp::CallbackGroup::SharedPtr reentrant_group_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

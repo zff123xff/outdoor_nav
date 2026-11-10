@@ -15,7 +15,7 @@ case "$primitive" in
     area_search) executable=send_area_search;;
     *) echo "Unknown primitive: $primitive" >&2; exit 2;;
 esac
-source "${CODEX_HOME:-$HOME/.codex}/ros/setup.bash"
+#source "${CODEX_HOME:-$HOME/.codex}/ros/setup.bash"
 [[ -r "$nav_ws/install/local_setup.bash" ]] || { echo 'Build outdoor_nav first.' >&2; exit 1; }
 source "$nav_ws/install/local_setup.bash"
 export ROS_LOG_DIR="${ROS_LOG_DIR:-/tmp/outdoor_nav_ros}"

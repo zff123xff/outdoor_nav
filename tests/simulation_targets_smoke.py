@@ -40,6 +40,7 @@ class Tensor:
 def main():
     with tempfile.TemporaryDirectory(prefix='simulation_targets_') as directory:
         path=Path(directory)/'targets.yaml'
+        write_targets(path, ['stale'], 'previous_run')
         engine=Path(directory)/'fixture.engine';engine.touch()
         rclpy.init(args=['--ros-args','-r','__ns:=/targets_fixture',
             '-p',f'model_path:={engine}','-p',f'targets_file:={path}'])
@@ -50,7 +51,9 @@ def main():
                      cls=Tensor([39,56]),conf=Tensor([.9,.9])),names={39:'bottle',56:'chair'})]
         fixture=Node('fixture')
         pipeline,detector=PipelineDispatcher(),YoloDetector()
+        assert read_targets(path) == [] and detector._targets == ()
         pipeline.set_parameters([Parameter('simulation_targets',value=True)])
+        pipeline.set_parameters([Parameter('target_interaction_enabled',value=False)])
         executor=SingleThreadedExecutor()
         for node in (fixture,pipeline,detector):executor.add_node(node)
         image_pub=fixture.create_publisher(Image,'front_camera/image_raw',10)
@@ -112,6 +115,12 @@ def main():
                 executor.spin_once(timeout_sec=.03)
         try:
             wait(lambda:task_pub.get_subscription_count() and pipeline.action_clients['area_search'].server_is_ready(),'readiness')
+            task_pub.publish(to_message(dict(task_id='point_idle',task_type='point_goal',targets=['chair'],
+                waypoints=[dict(latitude=31.,longitude=120.,altitude=100.)])))
+            wait(lambda:pipeline.current is not None,'point waiting for its Action server')
+            assert read_targets(path) == [] and pipeline._target_marker_process is None
+            task_pub.publish(Task(task_id='point_idle',cancel=True))
+            wait(lambda:pipeline.current is None,'cancel point before dispatch')
             task_pub.publish(to_message(dict(task_id='observe',task_type='area_search',targets=['bottle'],
                 area=dict(center=dict(latitude=31.,longitude=120.,altitude=100.),length_m=10.,width_m=10.,yaw_deg=0.))))
             wait(lambda:found and detector._targets==('bottle',),'selected bottle observation')
@@ -135,6 +144,8 @@ def main():
             request_pub.publish(TargetEvent(target_id=999,command='request shoot'))
             task_pub.publish(Task(task_id='observe',cancel=True))
             wait(lambda:pipeline.current is None and pipeline._target_marker_process is None,'area cancellation')
+            assert read_targets(path) == []
+            wait(lambda:detector._targets == (),'detector idle after cancellation')
             assert not any(m.id==999 for m in visuals)
             # A successful next task gets a fresh child; completion cleans it up.
             release=Future()
@@ -149,6 +160,7 @@ def main():
             wait(lambda:any(m.id==1 and m.color.r==1. for m in visuals),'numeric category mark')
             release.set_result(True)
             wait(lambda:pipeline.current is None and pipeline._target_marker_process is None,'successful cleanup')
+            assert read_targets(path) == []
             wait(lambda:any(e['event']=='completed' and e['task_id']=='success' for e in events),'success feedback')
             # Unexpected child termination must cancel the Action and fail the task.
             release=Future()
@@ -157,6 +169,7 @@ def main():
             wait(lambda:pipeline.goal_handle is not None and pipeline._target_marker_process is not None,'child failure readiness')
             pipeline._target_marker_process.terminate()
             wait(lambda:pipeline.current is None and pipeline._target_marker_process is None,'child failure cleanup')
+            assert read_targets(path) == []
             wait(lambda:any(e['event']=='failed' and e['task_id']=='child_failure' and 'marker exited' in e['message'] for e in events),'failure feedback')
             print('PASS: Task/file/1s YOLO reload; lidar/TF/GPS; stable IDs; simulation marks; queued isolation; dispatcher starts/stops child on cancel, success and crash')
         finally:

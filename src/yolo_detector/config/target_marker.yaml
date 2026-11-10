@@ -7,9 +7,19 @@
     request_topic: targets/request
     marker_topic: targets/markers
     map_frame: map
+    base_frame: base_link
+    inspection_enabled: true
+    approach_standoff_m: 4.5
+    approach_max_distance_m: 5.0
+    approach_yaw_tolerance_rad: 0.15
+    approach_stop_speed_mps: 0.05
+    approach_stop_yaw_rate_rps: 0.05
+    approach_stop_hold_s: 0.5
+    approach_timeout_s: 120.0
     sensor_timeout_s: 1.5
     sync_tolerance_s: 0.15
+    pointcloud_accumulation_window_s: 1.0  # 将检测时刻前1秒内的点云按各自时间戳变换后累积投影
     min_lidar_points: 3
     max_depth_spread_m: 0.5
     track_distance_m: 1.0
-    targets_file: ""
+    targets_file: "/home/nhy/outdoor_nav_1105/src/yolo_detector/config/detection_targets.yaml"

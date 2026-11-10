@@ -110,6 +110,43 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
     }
   }
 
+  origin_parameters_callback_ = add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter> & parameters) {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      std::lock_guard<std::mutex> lock(origin_mutex_);
+      double latitude = origin_lat_, longitude = origin_lon_, altitude = origin_alt_;
+      bool touched = false;
+      for (const auto & parameter : parameters) {
+        const auto & name = parameter.get_name();
+        if (name != "reference_latitude" && name != "reference_longitude" &&
+          name != "reference_altitude") {continue;}
+        touched = true;
+        if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
+          result.successful = false;
+          result.reason = "GPS reference parameters must be doubles";
+          return result;
+        }
+        if (name == "reference_latitude") {latitude = parameter.as_double();}
+        if (name == "reference_longitude") {longitude = parameter.as_double();}
+        if (name == "reference_altitude") {altitude = parameter.as_double();}
+      }
+      if (!touched) {return result;}
+      if (!std::isfinite(latitude) || !std::isfinite(longitude) || !std::isfinite(altitude) ||
+        std::abs(latitude) > 90.0 || std::abs(longitude) > 180.0)
+      {
+        result.successful = false;
+        result.reason = "GPS reference requires finite coordinates, latitude [-90,90], longitude [-180,180]";
+        return result;
+      }
+      if (!origin_valid_ || latitude != origin_lat_ || longitude != origin_lon_ || altitude != origin_alt_) {
+        origin_lat_ = latitude; origin_lon_ = longitude; origin_alt_ = altitude; origin_valid_ = true;
+        RCLCPP_INFO(get_logger(), "ENU GPS reference updated: lat=%.9f lon=%.9f alt=%.3f",
+          latitude, longitude, altitude);
+      }
+      return result;
+    });
+
   rclcpp::QoS odom_qos(10);
   odom_qos.best_effort();
   // Lambdas (not std::bind) because rclcpp only accepts a fixed set of

@@ -8,8 +8,7 @@ from rclpy.node import Node
 from rclpy.task import Future
 from patrol_node.action import PointGoal
 from task_interfaces.action import MultiPoint
-from task_pipeline.task_schema import from_message
-from task_interfaces.msg import Task
+from task_pipeline.task_schema import gps
 
 
 class MultiPointExecutor(Node):
@@ -30,7 +29,10 @@ class MultiPointExecutor(Node):
         if self.busy:
             return GoalResponse.REJECT
         try:
-            from_message(Task(task_id=request.task_id, task_type='multi_point', waypoints=request.waypoints))
+            if request.task_id != '145' or not request.waypoints:
+                raise ValueError('invalid multi-point task')
+            for point in request.waypoints:
+                gps(dict(latitude=point.latitude, longitude=point.longitude, altitude=point.altitude))
         except ValueError:
             return GoalResponse.REJECT
         self.busy = True
@@ -54,8 +56,7 @@ class MultiPointExecutor(Node):
             try:
                 self.client.send_goal_async(goal, feedback_callback=self.feedback).add_done_callback(self.accepted)
             except Exception as exc:
-                self.get_logger().error(str(exc))
-                self.waiter.set_result(False)
+                self.get_logger().error('Multi-point channel retained after send error: '+str(exc))
         elif time.monotonic() > deadline:
             self.pending = None
             self.waiter.set_result(False)
@@ -70,16 +71,19 @@ class MultiPointExecutor(Node):
             if self.canceling:
                 self.child.cancel_goal_async()
         except Exception as exc:
-            self.get_logger().error(str(exc))
-            self.waiter.set_result(False)
+            self.get_logger().error('Multi-point channel retained: cannot confirm child ownership: '+str(exc))
 
     def completed(self, future):
-        self.child = None
         try:
             result = future.result()
+            if result.status not in (4, 5, 6):
+                raise RuntimeError('non-terminal child result')
+            self.child = None
             self.waiter.set_result(result.status == 4 and result.result.success)
-        except Exception:
-            self.waiter.set_result(False)
+        except Exception as exc:
+            self.get_logger().error('Multi-point channel retained: cannot confirm child result: '+str(exc))
+            if self.child is not None:
+                self.child.cancel_goal_async()
 
     def feedback(self, message):
         d = message.feedback.distance_to_target_m

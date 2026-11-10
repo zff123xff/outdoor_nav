@@ -36,8 +36,7 @@ def main():
     port = listener.getsockname()[1]
     stop = threading.Event()
     received, errors = [], []
-    data = dict(task_id='mqtt_wire', task_type='point_goal', waypoints=[
-        dict(latitude=31., longitude=120., altitude=0.)], area={})
+    data = dict(task_id='140', waypoints=[31.,120.,0.])
     def broker():
         try:
             conn, _ = listener.accept()
@@ -111,7 +110,7 @@ def main():
                 raise AssertionError(f'MQTT timeout: seen={seen}, received={received}, errors={errors}')
             executor.spin_once(timeout_sec=.03)
         assert not errors, errors
-        assert len(seen) == 1 and seen[0].mission_id == 'mqtt_wire'
+        assert len(seen) == 1 and seen[0].mission_id == '140'
         assert seen[0].target.latitude == 31.
         example = Path(__file__).resolve().parents[1]/'src/external_pkg/task_pipeline/config/examples/gps/point_goal.yaml'
         sender = subprocess.Popen(['ros2', 'run', 'task_pipeline', 'send_point_goal',
@@ -124,7 +123,7 @@ def main():
                 sender.terminate()
             output, _ = sender.communicate(timeout=3.)
             assert sender.returncode == 0, output
-            assert len(seen) == 2 and seen[1].mission_id == 'point_topic_demo'
+            assert len(seen) == 2 and seen[1].mission_id == '140'
         finally:
             if sender.poll() is None:
                 sender.kill()

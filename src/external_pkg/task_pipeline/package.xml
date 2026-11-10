@@ -14,9 +14,17 @@
   <exec_depend>task_interfaces</exec_depend>
   <exec_depend>yolo_detector</exec_depend>
   <exec_depend>patrol_node</exec_depend>
+  <exec_depend>multi_goal_to_gp_goal</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <export>
     <build_type>ament_python</build_type>
   </export>

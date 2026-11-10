@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="140 定点导航"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="一个 GPS 三元组"];
+n1 [label="NavSatFix → PointGoal"];
+n2 [label="导航参考原点转换 ENU"];
+n3 [label="NavigateToPose → 导航栈"];
+n4 [label="新鲜 GPS / ENU 进度"];
+n5 [label="以关联 Action 结果判定完成"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

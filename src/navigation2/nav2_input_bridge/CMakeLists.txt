@@ -10,6 +10,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -27,6 +28,7 @@ ament_target_dependencies(input_bridge_node
   nav_msgs
   nav2_msgs
   rclcpp
+  rcl_interfaces
   rclcpp_action
   sensor_msgs
   std_msgs
@@ -58,6 +60,7 @@ ament_export_dependencies(
   nav_msgs
   nav2_msgs
   rclcpp
+  rcl_interfaces
   rclcpp_action
   sensor_msgs
   std_msgs

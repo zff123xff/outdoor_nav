@@ -25,6 +25,10 @@ def validate_task(data):
     if result.get('search_controller', 'co_search') != 'co_search':
         raise ValueError('area_search only supports search_controller: co_search')
     result['search_controller'] = 'co_search'
+    strategy = result.get('search_strategy', 'co_search')
+    if strategy not in ('co_search', 'parallel_lines'):
+        raise ValueError('search_strategy must be co_search or parallel_lines')
+    result['search_strategy'] = strategy
     mode = result.get('coordinate_mode', 'enu')
     if mode not in ('enu', 'gps'):
         raise ValueError('coordinate_mode must be gps or enu')

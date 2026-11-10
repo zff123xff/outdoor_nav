@@ -106,5 +106,5 @@ src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rsync -avz --itemize-changes --no-o --no-g \
   --exclude='.git/' --exclude='build*/' --exclude='install*/' --exclude='log/' \
   --exclude='/launch_sim.sh' --exclude='/launch_real.sh' --exclude='/run_primitive.sh'\
-  "$src_dir/" nhy@192.168.56.1:~/outdoor_nav_1104/
+  "$src_dir/" nhy@192.168.56.1:~/outdoor_nav/
 ```

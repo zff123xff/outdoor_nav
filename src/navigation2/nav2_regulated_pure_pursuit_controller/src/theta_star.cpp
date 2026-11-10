@@ -19,8 +19,8 @@ namespace theta_star
 {
 
 ThetaStar::ThetaStar()
-: w_traversal_cost_(1.0),
-  w_euc_cost_(2.0),
+: w_traversal_cost_(10.0),
+  w_euc_cost_(0.5),
   w_heuristic_cost_(1.0),
   how_many_corners_(8),
   allow_unknown_(true),

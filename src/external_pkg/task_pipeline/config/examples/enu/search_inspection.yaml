@@ -1,0 +1,14 @@
+# 配合 launch_sim.sh inspection_search_mode:=true 使用。
+robot_namespace: robot_1
+coordinate_mode: enu
+task:
+  task_id: 143
+  targets: [person, car]
+  params:
+    center_enu:
+      east: 0.0
+      north: 0.0
+    rectangle:
+      length_m: 10.0
+      width_m: 10.0
+      yaw_deg: 0.0

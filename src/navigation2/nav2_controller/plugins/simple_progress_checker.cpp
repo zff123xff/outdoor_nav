@@ -64,7 +64,16 @@ bool SimpleProgressChecker::check(geometry_msgs::msg::PoseStamped & current_pose
     resetBaselinePose(current_pose2d);
     return true;
   }
-  return !((clock_->now() - baseline_time_) > time_allowance_);
+  const double elapsed = (clock_->now() - baseline_time_).seconds();
+  if (elapsed > time_allowance_.seconds()) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("nav2_controller.SimpleProgressChecker"),
+      "Progress timeout: elapsed=%.3fs limit=%.3fs displacement=%.4fm required>%.4fm; "
+      "this checker does not count rotation as progress",
+      elapsed, time_allowance_.seconds(), pose_distance(current_pose2d, baseline_pose_), radius_);
+    return false;
+  }
+  return true;
 }
 
 void SimpleProgressChecker::reset()

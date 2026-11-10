@@ -39,9 +39,11 @@
 #include "nav2_costmap_2d/obstacle_layer.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "pluginlib/class_list_macros.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
@@ -82,6 +84,8 @@ void ObstacleLayer::onInitialize()
   declareParameter("max_obstacle_height", rclcpp::ParameterValue(2.0));
   declareParameter("combination_method", rclcpp::ParameterValue(1));
   declareParameter("clear_before_update", rclcpp::ParameterValue(false));
+  declareParameter("min_points_per_cell", rclcpp::ParameterValue(1));
+  declareParameter("point_count_window_s", rclcpp::ParameterValue(0.0));
   declareParameter("observation_sources", rclcpp::ParameterValue(std::string("")));
 
   auto node = node_.lock();
@@ -95,6 +99,14 @@ void ObstacleLayer::onInitialize()
   node->get_parameter(name_ + "." + "max_obstacle_height", max_obstacle_height_);
   node->get_parameter(name_ + "." + "combination_method", combination_method_);
   node->get_parameter(name_ + "." + "clear_before_update", clear_before_update_);
+  node->get_parameter(name_ + ".min_points_per_cell", min_points_per_cell_);
+  node->get_parameter(name_ + ".point_count_window_s", point_count_window_s_);
+  if (!std::isfinite(point_count_window_s_) || point_count_window_s_ < 0.0) {
+    throw std::invalid_argument("point_count_window_s must be finite and nonnegative");
+  }
+  if (min_points_per_cell_ < 1 || min_points_per_cell_ > 1000000) {
+    throw std::invalid_argument("min_points_per_cell must be in 1..1000000");
+  }
   node->get_parameter("track_unknown_space", track_unknown_space);
   node->get_parameter("transform_tolerance", transform_tolerance);
   node->get_parameter(name_ + "." + "observation_sources", topics_string);
@@ -161,6 +173,12 @@ void ObstacleLayer::onInitialize()
     node->get_parameter(
       name_ + "." + source + "." + "observation_persistence",
       observation_keep_time);
+    if (point_count_window_s_ > 0.0 && observation_keep_time < point_count_window_s_) {
+      RCLCPP_WARN(logger_,
+        "Source %s: observation_persistence (%.3fs) is shorter than point_count_window_s "
+        "(%.3fs); increase source persistence to retain the complete counting window.",
+        source.c_str(), observation_keep_time, point_count_window_s_);
+    }
     node->get_parameter(
       name_ + "." + source + "." + "expected_update_rate",
       expected_update_rate);
@@ -303,12 +321,34 @@ ObstacleLayer::dynamicParametersCallback(
   std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
   rcl_interfaces::msg::SetParametersResult result;
 
+  // Validate the entire request before mutating any layer settings.
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() == name_ + ".point_count_window_s" &&
+      (parameter.get_type() != ParameterType::PARAMETER_DOUBLE ||
+      !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0))
+    {
+      result.successful = false;
+      result.reason = "point_count_window_s must be a finite nonnegative double";
+      return result;
+    }
+    if (parameter.get_name() == name_ + ".min_points_per_cell" &&
+      (parameter.get_type() != ParameterType::PARAMETER_INTEGER ||
+      parameter.as_int() < 1 || parameter.as_int() > 1000000))
+    {
+      result.successful = false;
+      result.reason = "min_points_per_cell must be an integer in 1..1000000";
+      return result;
+    }
+  }
+
   for (auto parameter : parameters) {
     const auto & param_type = parameter.get_type();
     const auto & param_name = parameter.get_name();
 
     if (param_type == ParameterType::PARAMETER_DOUBLE) {
-      if (param_name == name_ + "." + "min_obstacle_height") {
+      if (param_name == name_ + ".point_count_window_s") {
+        point_count_window_s_ = parameter.as_double();
+      } else if (param_name == name_ + "." + "min_obstacle_height") {
         min_obstacle_height_ = parameter.as_double();
       } else if (param_name == name_ + "." + "max_obstacle_height") {
         max_obstacle_height_ = parameter.as_double();
@@ -325,7 +365,9 @@ ObstacleLayer::dynamicParametersCallback(
         clear_before_update_ = parameter.as_bool();
       }
     } else if (param_type == ParameterType::PARAMETER_INTEGER) {
-      if (param_name == name_ + "." + "combination_method") {
+      if (param_name == name_ + ".min_points_per_cell") {
+        min_points_per_cell_ = parameter.as_int();
+      } else if (param_name == name_ + "." + "combination_method") {
         combination_method_ = parameter.as_int();
       }
     }
@@ -515,8 +557,15 @@ ObstacleLayer::updateBounds(
   }
 
   if (clear_before_update_) {
+    // Expiration can leave no new points to touch bounds. Include last cycle's
+    // marked region so the master grid and inflation also erase expired obstacles.
+    if (have_marking_bounds_) {
+      touch(marking_min_x_, marking_min_y_, min_x, min_y, max_x, max_y);
+      touch(marking_max_x_, marking_max_y_, min_x, min_y, max_x, max_y);
+    }
     resetMaps();
   }
+  have_marking_bounds_ = false;
 
   useExtraBounds(min_x, min_y, max_x, max_y);
 
@@ -537,13 +586,23 @@ ObstacleLayer::updateBounds(
     raytraceFreespace(clearing_observations[i], min_x, min_y, max_x, max_y);
   }
 
-  // place the new obstacles into a priority queue... each with a priority of zero to begin with
+  // Recompute evidence from cached observations each cycle, never add hits to a
+  // counter retained across cycles. Map/world conversion handles a rolling origin.
+  std::unordered_map<unsigned int, int> cell_hits;
+  const auto now = clock_->now();
   for (std::vector<Observation>::const_iterator it = observations.begin();
     it != observations.end(); ++it)
   {
     const Observation & obs = *it;
 
     const sensor_msgs::msg::PointCloud2 & cloud = *(obs.cloud_);
+
+    if (point_count_window_s_ > 0.0) {
+      const double age = (now-rclcpp::Time(cloud.header.stamp, now.get_clock_type())).seconds();
+      if (age < 0.0 || age > point_count_window_s_) {continue;}
+    } else {
+      cell_hits.clear();  // Compatibility mode: independent per-cloud thresholds.
+    }
 
     double sq_obstacle_max_range = obs.obstacle_max_range_ * obs.obstacle_max_range_;
     double sq_obstacle_min_range = obs.obstacle_min_range_ * obs.obstacle_min_range_;
@@ -554,6 +613,7 @@ ObstacleLayer::updateBounds(
 
     for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
       double px = *iter_x, py = *iter_y, pz = *iter_z;
+      if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) {continue;}
 
       // if the obstacle is too low, we won't add it
       if (pz < min_obstacle_height_) {
@@ -593,8 +653,19 @@ ObstacleLayer::updateBounds(
       }
 
       unsigned int index = getIndex(mx, my);
+      if (min_points_per_cell_ > 1 && ++cell_hits[index] < min_points_per_cell_) {continue;}
       costmap_[index] = LETHAL_OBSTACLE;
       touch(px, py, min_x, min_y, max_x, max_y);
+      if (!have_marking_bounds_) {
+        marking_min_x_ = marking_max_x_ = px;
+        marking_min_y_ = marking_max_y_ = py;
+        have_marking_bounds_ = true;
+      } else {
+        marking_min_x_ = std::min(marking_min_x_, px);
+        marking_min_y_ = std::min(marking_min_y_, py);
+        marking_max_x_ = std::max(marking_max_x_, px);
+        marking_max_y_ = std::max(marking_max_y_, py);
+      }
     }
   }
 

@@ -2,6 +2,7 @@
 
 import os
 import yaml
+from yolo_detector.targets import DEFAULT_TARGETS_FILE
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -47,8 +48,21 @@ def generate_launch_description():
     dispatcher = Node(package="task_pipeline", executable="pipeline_dispatcher",
                       namespace=ns, output="screen",
                       parameters=[{"robot_namespace": ns,
-                                   "simulation_targets": ParameterValue(LaunchConfiguration("simulation_targets"), value_type=bool),
+                                   "inspection_search_mode": ParameterValue(
+                                       LaunchConfiguration("inspection_search_mode"), value_type=bool),
+                                   "yolo_targets_file": ParameterValue(
+                                       LaunchConfiguration("yolo_targets_file"), value_type=str),
+                                   "simulation_targets": ParameterValue(
+                                       LaunchConfiguration("simulation_targets"), value_type=bool),
+                                   "target_interaction_enabled": ParameterValue(
+                                       LaunchConfiguration("target_interaction_enabled"), value_type=bool),
                                    "use_sim_time": sim_time}])
+    simulation_marker = Node(package="yolo_detector", executable="simulation_target_marker",
+        name="simulation_target_marker", namespace=ns, output="screen",
+        condition=IfCondition(LaunchConfiguration("simulation_targets")),
+        parameters=[os.path.join(get_package_share_directory("yolo_detector"),
+            "config", "target_marker.yaml"), {"use_sim_time": sim_time,
+            "targets_file": LaunchConfiguration("yolo_targets_file")}])
     primitive_mqtt = Node(
         package="task_pipeline", executable="mqtt_task_gateway", namespace=ns,
         output="screen", condition=IfCondition(LaunchConfiguration("mqtt")),
@@ -79,6 +93,13 @@ def generate_launch_description():
     return LaunchDescription([
         declare_robot_namespace,
         DeclareLaunchArgument("simulation_targets", default_value="false"),
+        DeclareLaunchArgument("target_interaction_enabled", default_value="false"),
+        DeclareLaunchArgument("inspection_search_mode", default_value="false",
+                              description="143: search and observe markers; false keeps assigned-target visits"),
+        DeclareLaunchArgument("yolo_targets_file", default_value=DEFAULT_TARGETS_FILE,
+                              description="Shared class file for dispatcher and YOLO; empty uses the common default"),
+        DeclareLaunchArgument("inspection_config", default_value=os.path.join(
+            get_package_share_directory("task_pipeline"), "config", "inspection.yaml")),
         DeclareLaunchArgument("area_search_config", default_value=os.path.join(
             get_package_share_directory("co_search_nav"), "config", "area_search.yaml")),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
@@ -87,7 +108,19 @@ def generate_launch_description():
         OpaqueFunction(function=_area_search_executor),
         *mqtt_arguments,
         dispatcher,
+        simulation_marker,
         primitive_mqtt,
         patrol_launch,
         multi_point,
+        Node(package="task_pipeline", executable="target_inspection_executor", namespace=ns,
+             output="screen", parameters=[LaunchConfiguration("inspection_config"),
+                                          {"use_sim_time": sim_time}]),
+        Node(package="task_pipeline", executable="target_inspection_executor", name="search_target_visitor",
+             namespace=ns, output="screen", condition=IfCondition(LaunchConfiguration("inspection_search_mode")),
+             parameters=[LaunchConfiguration("inspection_config"), {"use_sim_time": sim_time,
+                         "action_name": "search_target_inspection", "assigned_topic": "targets/search_assigned",
+                         "require_fresh_assignment": True}]),
+        Node(package="task_pipeline", executable="search_inspection_executor", namespace=ns,
+             output="screen", condition=IfCondition(LaunchConfiguration("inspection_search_mode")),
+             parameters=[LaunchConfiguration("inspection_config"), {"use_sim_time": sim_time}]),
     ])

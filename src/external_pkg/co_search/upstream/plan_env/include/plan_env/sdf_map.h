@@ -8,6 +8,8 @@
 #include <queue>
 #include <rclcpp/rclcpp.hpp>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -46,6 +48,9 @@ public:
 
     // ROS adapter entry: input is already transformed using the real sensor TF.
     void integrateExternalCloud(const pcl::PointCloud<pcl::PointXYZ>& points, const Eigen::Vector3d& sensor_pos);
+    // Borrowed clouds remain alive for this synchronous call. Preserve all ray
+    // origins while inflating/updating ESDF only once for the whole batch.
+    void integrateExternalCloudBatch(const std::vector<std::pair<const pcl::PointCloud<pcl::PointXYZ>*, Eigen::Vector3d>>& observations);
 
     void   posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& id);
     void   indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos);

@@ -395,6 +395,30 @@ void SDFMap::integrateExternalCloud(const pcl::PointCloud<pcl::PointXYZ>& points
     }
 }
 
+void SDFMap::integrateExternalCloudBatch(const std::vector<std::pair<const pcl::PointCloud<pcl::PointXYZ>*, Eigen::Vector3d>>& observations)
+{
+    bool updated = false;
+    Eigen::Vector3i low, high;
+    for (const auto& observation : observations) {
+        if (!observation.first || observation.first->empty() || !isInMap(observation.second)) continue;
+        mm_->drone_pos_ = observation.second;
+        inputPointCloud(*observation.first, static_cast<int>(observation.first->size()), observation.second);
+        if (mr_->local_updated_) {
+            if (!updated) { low = md_->local_bound_min_; high = md_->local_bound_max_; }
+            else { low = low.cwiseMin(md_->local_bound_min_); high = high.cwiseMax(md_->local_bound_max_); }
+            updated = true;
+        }
+    }
+    if (updated) {
+        md_->local_bound_min_ = low;
+        md_->local_bound_max_ = high;
+        clearAndInflateLocalMap();
+        updateESDF3d();
+        mr_->local_updated_ = false;
+        mr_->esdf_need_update_ = false;
+    }
+}
+
 void SDFMap::inputPointCloud(const pcl::PointCloud<pcl::PointXYZ>& points, const int& point_num, const Eigen::Vector3d& camera_pos)
 {
     if (point_num == 0)

@@ -1,13 +1,11 @@
 robot_namespace: robot_1
 task:
-  task_id: multi_point_demo
-  task_type: multi_point
+  task_id: 145
   waypoints:
-  - latitude: 40.9446353
-    longitude: 113.172819
-    altitude: 1298.7345711102703
-  - latitude: 40.94464
-    longitude: 113.172825
-    altitude: 1298.7345711102703
-  area: {}
+  - 40.9446353
+  - 113.172819
+  - 1298.7345711102703
+  - 40.94464
+  - 113.172825
+  - 1298.7345711102703
   targets: []

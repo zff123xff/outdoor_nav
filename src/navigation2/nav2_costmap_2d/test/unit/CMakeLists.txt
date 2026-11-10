@@ -59,3 +59,7 @@ target_link_libraries(denoise_layer_test
 
 ament_add_gtest(ground_height_test ground_height_test.cpp)
 target_link_libraries(ground_height_test ${PROJECT_NAME}::nav2_costmap_2d_core)
+
+ament_add_gtest(obstacle_density_test obstacle_density_test.cpp)
+target_link_libraries(obstacle_density_test
+  ${PROJECT_NAME}::nav2_costmap_2d_core ${PROJECT_NAME}::layers)

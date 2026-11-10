@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Optional, per-shell Fast DDS diagnostic profile. Keeps DDS domain/discovery
+     defaults and uses UDPv4 instead of shared memory. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>outdoor_nav_udp</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="outdoor_nav_udp_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>outdoor_nav_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

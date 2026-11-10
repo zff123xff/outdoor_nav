@@ -14,6 +14,7 @@ StraightPlanner::StraightPlanner(const rclcpp::NodeOptions & options)
   declare_parameter("global_frame", std::string("map"));
   declare_parameter("robot_base_frame", std::string("base_link"));
   declare_parameter("path_step_m", 0.1);
+  declare_parameter("max_path_length_m", 1000.0);
   declare_parameter("planning_period_s", 0.5);
   declare_parameter("controller_id", std::string("FollowPath"));
   declare_parameter("goal_checker_id", std::string("general_goal_checker"));
@@ -24,12 +25,16 @@ nav2_util::CallbackReturn StraightPlanner::on_configure(const rclcpp_lifecycle::
   get_parameter("global_frame", global_frame_);
   get_parameter("robot_base_frame", robot_frame_);
   get_parameter("path_step_m", path_step_m_);
+  get_parameter("max_path_length_m", max_path_length_m_);
   get_parameter("planning_period_s", planning_period_s_);
   get_parameter("controller_id", controller_id_);
   get_parameter("goal_checker_id", goal_checker_id_);
   get_parameter("follow_path_action", action_name_);
-  if (!std::isfinite(path_step_m_) || path_step_m_ <= 0 || !std::isfinite(planning_period_s_) || planning_period_s_ <= 0) {
-    RCLCPP_ERROR(get_logger(), "Path step and planning period must be positive and finite");
+  if (!std::isfinite(path_step_m_) || path_step_m_ <= 0 ||
+    !std::isfinite(planning_period_s_) || planning_period_s_ <= 0 ||
+    !std::isfinite(max_path_length_m_) || max_path_length_m_ <= 0)
+  {
+    RCLCPP_ERROR(get_logger(), "Path step, planning period and maximum path length must be positive and finite");
     return nav2_util::CallbackReturn::FAILURE;
   }
   if (!reentrant_group_) {
@@ -229,6 +234,16 @@ void StraightPlanner::onPlanTick()
     navigation_goal_->publish_feedback(feedback);
   }
   if (follow_path_pending_) {return;}
+  const double path_length = std::hypot(
+    goal.pose.position.x - robot.pose.position.x,
+    goal.pose.position.y - robot.pose.position.y);
+  if (!std::isfinite(path_length) || path_length > max_path_length_m_) {
+    RCLCPP_ERROR(
+      get_logger(), "Rejecting straight path of %.2f m; max_path_length_m=%.2f m. Check GPS/ENU origin and task coordinates",
+      path_length, max_path_length_m_);
+    finishGoal(false);
+    return;
+  }
   FollowPath::Goal request;
   request.path = buildStraightPath(robot, goal);
   request.controller_id = controller_id_; request.goal_checker_id = goal_checker_id_;

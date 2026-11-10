@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="指令入口、调度与取消"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="ROS Task / MQTT JSON"];
+n1 [label="忙碌直接拒收；空闲再校验参数\n取消只匹配当前 task_id"];
+n2 [label="一个活动基元，无执行队列"];
+n3 [label="调用对应 Action / 接收反馈"];
+n4 [label="取消时等待子 Action 终结\n完成前不接收下一任务"];
+n5 [label="1 Hz robot_task_status\n终态 progress=100 + task_feedback"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

@@ -1,6 +1,7 @@
 """Coordinate validation and ENU-to-WGS84 conversion for task files."""
 
 import math
+from multi_goal_to_gp_goal.coordinates import enu_to_lla
 
 
 def finite_number(value, field):
@@ -16,21 +17,5 @@ def enu_to_gps(east, north, up, origin):
     east = finite_number(east, 'x/east')
     north = finite_number(north, 'y/north')
     up = finite_number(up, 'z/up')
-    lat0, lon0, alt0 = origin
-    radius = math.hypot(east, north)
-    angular = radius / 6378137.0
-    if angular > math.pi:
-        raise ValueError('ENU 平面距离必须小于半个地球周长')
-    if radius < 1e-9:
-        return lat0, lon0, alt0 + up
-    lat0_r = math.radians(lat0)
-    lon0_r = math.radians(lon0)
-    sin_c = math.sin(angular)
-    cos_c = math.cos(angular)
-    lat_r = math.asin(cos_c * math.sin(lat0_r) + north * sin_c * math.cos(lat0_r) / radius)
-    lon_r = lon0_r + math.atan2(
-        east * sin_c,
-        radius * math.cos(lat0_r) * cos_c - north * math.sin(lat0_r) * sin_c,
-    )
-    return math.degrees(lat_r), math.degrees(lon_r), alt0 + up
+    return enu_to_lla(east, north, up, *origin)
 

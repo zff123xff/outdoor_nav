@@ -17,7 +17,7 @@ def test_atomic_class_file_and_selection(tmp_path):
     assert matches(read_targets(path),'dog',16)
     assert not matches(read_targets(path),'person',0)
     write_targets(path,[])
-    assert matches(read_targets(path),'anything')
+    assert not matches(read_targets(path),'anything')
     assert not list(path.parent.glob('.targets_*'))
 
 

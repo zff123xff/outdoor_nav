@@ -14,6 +14,8 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <new>
+#include <chrono>
 #include <string>
 #include <limits>
 #include <memory>
@@ -75,6 +77,17 @@ void RegulatedPurePursuitController::configure(
   double transform_tolerance = 0.1;
   double control_frequency = 20.0;
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".w_traversal_cost", rclcpp::ParameterValue(planner_->w_traversal_cost_));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".w_euc_cost", rclcpp::ParameterValue(planner_->w_euc_cost_));
+  node->get_parameter(plugin_name_ + ".w_traversal_cost", planner_->w_traversal_cost_);
+  node->get_parameter(plugin_name_ + ".w_euc_cost", planner_->w_euc_cost_);
+  if (!std::isfinite(planner_->w_traversal_cost_) || planner_->w_traversal_cost_ < 0.0 ||
+    !std::isfinite(planner_->w_euc_cost_) || planner_->w_euc_cost_ <= 0.0)
+  {
+    throw std::invalid_argument("Theta* weights require finite w_traversal_cost >= 0 and w_euc_cost > 0");
+  }
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".prefer_supplied_path", rclcpp::ParameterValue(true));
   node->get_parameter(plugin_name_ + ".prefer_supplied_path", prefer_supplied_path_);
   declare_parameter_if_not_declared(
@@ -84,6 +97,28 @@ void RegulatedPurePursuitController::configure(
   if (local_path_smoothing_iterations_ < 0 || local_path_smoothing_iterations_ > 5) {
     throw std::invalid_argument("local_path_smoothing_iterations must be between 0 and 5");
   }
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".enable_path_hysteresis", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".switch_penalty", rclcpp::ParameterValue(planner_->w_euc_cost_ * .5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".min_switch_interval", rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".switch_only_on_obstacle", rclcpp::ParameterValue(false));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".log_path_switch", rclcpp::ParameterValue(false));
+  node->get_parameter(plugin_name_ + ".enable_path_hysteresis", path_hysteresis_.enabled);
+  node->get_parameter(plugin_name_ + ".switch_penalty", path_hysteresis_.switch_penalty);
+  node->get_parameter(plugin_name_ + ".min_switch_interval", path_hysteresis_.min_switch_interval);
+  node->get_parameter(
+    plugin_name_ + ".switch_only_on_obstacle", path_hysteresis_.switch_only_on_obstacle);
+  node->get_parameter(plugin_name_ + ".log_path_switch", log_path_switch_);
+  if (!std::isfinite(path_hysteresis_.switch_penalty) || path_hysteresis_.switch_penalty < 0.0 ||
+    !std::isfinite(path_hysteresis_.min_switch_interval) || path_hysteresis_.min_switch_interval < 0.0)
+  {
+    throw std::invalid_argument("Path switch penalty and interval must be finite and nonnegative");
+  }
+  path_hysteresis_.reset();
   goal_dist_tol_ = 0.25;  // reasonable default before first update
 
   declare_parameter_if_not_declared(
@@ -290,6 +325,7 @@ void RegulatedPurePursuitController::configure(
 
 void RegulatedPurePursuitController::cleanup()
 {
+  path_hysteresis_.reset();
   RCLCPP_INFO(
     logger_,
     "Cleaning up controller: %s of type"
@@ -302,6 +338,7 @@ void RegulatedPurePursuitController::cleanup()
 
 void RegulatedPurePursuitController::activate()
 {
+  path_hysteresis_.reset();
   last_heading_mode_ = "idle";
   rotation_command_ = 0.0;
   reached_xy_tolerance_ = false;
@@ -327,6 +364,7 @@ void RegulatedPurePursuitController::activate()
 
 void RegulatedPurePursuitController::deactivate()
 {
+  path_hysteresis_.reset();
   RCLCPP_INFO(
     logger_,
     "Deactivating controller: %s of type "
@@ -372,6 +410,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
 
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  const char * allocation_stage = "goal checker";
+  try {
 
   // Update for the current goal checker's state
   geometry_msgs::msg::Pose pose_tolerance;
@@ -383,7 +423,9 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   }
 
   double backup_linear = 0.0, backup_angular = 0.0;
+  allocation_stage = "backup check";
   if (computeBackupCommand(pose, backup_linear, backup_angular)) {
+    path_hysteresis_.reset();
     if (use_collision_detection_ && isCollisionImminent(
         pose, backup_linear, backup_angular, backup_recovery_distance_))
     {
@@ -402,12 +444,15 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   }
 
   // get local plan
+  allocation_stage = "local path selection";
   local_plan_ = getLocalPlan(pose);
   
   // Transform path to robot base frame
+  allocation_stage = "local path transform/publication";
   auto transformed_plan = transformGlobalPlan(pose);
 
   // Find look ahead distance and point on path and publish
+  allocation_stage = "lookahead";
   double lookahead_dist = getLookAheadDistance(speed);
 
   // Check for reverse driving
@@ -450,6 +495,7 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   double angle_to_heading;
   // The carrot and the end of a local detour are not necessarily the mission
   // goal. Only the actual final goal may trigger final-heading alignment.
+  allocation_stage = "final goal transform";
   geometry_msgs::msg::PoseStamped final_goal = global_plan_.poses.back();
   final_goal.header = global_plan_.header;
   final_goal.header.stamp = pose.header.stamp;
@@ -475,6 +521,7 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   } else {
     heading_mode = "tracking";
     rotation_command_ = 0.0;
+    allocation_stage = "velocity constraints";
     applyConstraints(
       curvature, speed,
       costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
@@ -488,8 +535,10 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   }
 
   // Collision checking on this velocity heading
+  allocation_stage = "collision projection";
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
+    path_hysteresis_.reset();
     throw nav2_core::PlannerException("RegulatedPurePursuitController detected collision ahead!");
   }
 
@@ -511,6 +560,13 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   cmd_vel.twist.linear.x = linear_vel;
   cmd_vel.twist.angular.z = angular_vel;
   return cmd_vel;
+  } catch (const std::bad_alloc &) {
+    RCLCPP_ERROR(
+      logger_, "FollowPath allocation failed at %s: global_poses=%zu local_poses=%zu costmap=%ux%u",
+      allocation_stage, global_plan_.poses.size(), local_plan_.poses.size(),
+      costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
+    throw;
+  }
 }
 
 bool RegulatedPurePursuitController::isBackupPoseSafe(double x, double y, double yaw)
@@ -937,6 +993,7 @@ void RegulatedPurePursuitController::applyConstraints(
 
 void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
+  path_hysteresis_.setGoal(path);
   global_plan_ = path;
   rotation_command_ = 0.0;
   // ControllerServer resets its goal checker on every setPlan as well.
@@ -1005,6 +1062,11 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
       stamped_pose.header.frame_id = local_plan_.header.frame_id;
       stamped_pose.header.stamp = robot_pose.header.stamp;
       stamped_pose.pose = local_plan_pose.pose;
+      // FollowPath is planar. A map path at z=0 and a robot at a very
+      // different map height must share the robot's height before a full 3D
+      // TF transform; otherwise roll/pitch turns that height gap into a
+      // spurious horizontal carrot offset and endless rotate-to-path.
+      stamped_pose.pose.position.z = robot_pose.pose.position.z;
       transformPose(costmap_ros_->getBaseFrameID(), stamped_pose, transformed_pose);
       transformed_pose.pose.position.z = 0.0;
       return transformed_pose;
@@ -1095,6 +1157,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
   if (global_plan_.poses.size() < 1)
   {
     RCLCPP_WARN(logger_, "Global plan is empty, cannot find goal");
+    path_hysteresis_.reset();
     return local_plan_;
   }
 
@@ -1129,6 +1192,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
   if (!found_goal)
   {
     RCLCPP_WARN(logger_, "No valid local goal found within local costmap!");
+    path_hysteresis_.reset();
     return local_plan_;
   }
 
@@ -1177,15 +1241,47 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
     getPlan(local_plan_);
   }
 
-  if (local_plan_.poses.empty())
+  if (local_plan_.poses.empty()) {
+    path_hysteresis_.reset();
     return local_plan_;
+  }
 
   if (it == global_plan_.poses.end())
     local_plan_.poses.back().pose.orientation = global_plan_.poses.back().pose.orientation;
 
   local_plan_.header.stamp = clock_->now();
   local_plan_.header.frame_id = global_plan_.header.frame_id;
+  local_plan_ = selectLocalPath(local_plan_, robot_pose);
   return local_plan_;
+}
+
+nav_msgs::msg::Path RegulatedPurePursuitController::selectLocalPath(
+  const nav_msgs::msg::Path & candidate, const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  const double now = std::chrono::duration<double>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  auto chosen = path_hysteresis_.select(candidate, robot_pose, *costmap_, now,
+    planner_->w_euc_cost_, planner_->w_traversal_cost_,
+    [this](double x, double y, double heading) {
+      return isRetainedPathPoseSafe(x, y, heading);
+    });
+  const auto & choice = path_hysteresis_.decision();
+  if (log_path_switch_) {
+    // Both switches and repeated holds are throttled; normal operation logs nothing.
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, 1000,
+      "path_selection current=%llu candidate=%llu J_current=%.4f J_candidate=%.4f "
+      "switch_penalty=%.4f current_valid=%d candidate_valid=%d switched=%d reason=%s",
+      static_cast<unsigned long long>(choice.current_id),
+      static_cast<unsigned long long>(choice.candidate_id), choice.current_cost,
+      choice.candidate_cost, path_hysteresis_.switch_penalty, choice.current_valid,
+      choice.candidate_valid, choice.switched, choice.reason.c_str());
+  }
+  // A retained path has today's common endpoint, stamp, and final orientation.
+  chosen.header = candidate.header;
+  if (!chosen.poses.empty() && !candidate.poses.empty()) {
+    chosen.poses.back().pose.orientation = candidate.poses.back().pose.orientation;
+  }
+  return chosen;
 }
 
 void RegulatedPurePursuitController::getPlan(nav_msgs::msg::Path & path)
@@ -1309,6 +1405,31 @@ RegulatedPurePursuitController::dynamicParametersCallback(
   // Reject invalid new settings before mutating any controller state.
   for (const auto & parameter : parameters) {
     const auto name = parameter.get_name();
+    if (name == plugin_name_ + ".w_traversal_cost" || name == plugin_name_ + ".w_euc_cost") {
+      if (parameter.get_type() != ParameterType::PARAMETER_DOUBLE ||
+        !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0 ||
+        (name == plugin_name_ + ".w_euc_cost" && parameter.as_double() == 0.0))
+      {
+        result.successful = false;
+        result.reason = "Theta* weights require finite double w_traversal_cost >= 0 and w_euc_cost > 0";
+        return result;
+      }
+    }
+    if (name == plugin_name_ + ".enable_path_hysteresis" || name == plugin_name_ + ".log_path_switch" ||
+      name == plugin_name_ + ".switch_only_on_obstacle") {
+      if (parameter.get_type() != ParameterType::PARAMETER_BOOL) {
+        result.successful = false; result.reason = "Path hysteresis flags must be boolean"; return result;
+      }
+    }
+    if (name == plugin_name_ + ".switch_penalty" || name == plugin_name_ + ".min_switch_interval") {
+      if (parameter.get_type() != ParameterType::PARAMETER_DOUBLE ||
+        !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0)
+      {
+        result.successful = false;
+        result.reason = "Path switch penalty and interval must be finite nonnegative doubles";
+        return result;
+      }
+    }
     if (name == plugin_name_ + ".local_path_smoothing_iterations" &&
       (parameter.get_type() != ParameterType::PARAMETER_INTEGER ||
       parameter.as_int() < 0 || parameter.as_int() > 5))
@@ -1360,6 +1481,27 @@ RegulatedPurePursuitController::dynamicParametersCallback(
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
+    if (name == plugin_name_ + ".w_traversal_cost") {
+      planner_->w_traversal_cost_ = parameter.as_double();
+      path_hysteresis_.reset();
+    } else if (name == plugin_name_ + ".w_euc_cost") {
+      planner_->w_euc_cost_ = parameter.as_double();
+      path_hysteresis_.reset();
+    }
+    if (name == plugin_name_ + ".enable_path_hysteresis") {
+      path_hysteresis_.enabled = parameter.as_bool();
+      path_hysteresis_.reset();
+    } else if (name == plugin_name_ + ".log_path_switch") {
+      log_path_switch_ = parameter.as_bool();
+    } else if (name == plugin_name_ + ".switch_penalty") {
+      path_hysteresis_.switch_penalty = parameter.as_double();
+    } else if (name == plugin_name_ + ".min_switch_interval") {
+      path_hysteresis_.min_switch_interval = parameter.as_double();
+    } else if (name == plugin_name_ + ".switch_only_on_obstacle") {
+      path_hysteresis_.switch_only_on_obstacle = parameter.as_bool();
+      path_hysteresis_.reset();
+    }
+
 
     if (name == plugin_name_ + ".local_path_smoothing_iterations") {
       local_path_smoothing_iterations_ = static_cast<int>(parameter.as_int());

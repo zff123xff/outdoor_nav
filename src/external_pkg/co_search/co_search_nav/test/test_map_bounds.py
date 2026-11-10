@@ -12,7 +12,7 @@ from co_search_nav.task_geometry import Rectangle
 @pytest.mark.parametrize('yaw', [0., .6])
 def test_native_storage_is_cropped_to_requested_rectangle(yaw):
     n = NS(task={}, state='executing', region=Rectangle(10., -2., 10., 8., yaw),
-           frame='robot_1/map', map_pub=NS(publish=Mock()), metrics={})
+           frame='robot_1/map', map_pub=NS(publish=Mock()), metrics={}, finishing=None, coverage_threshold=0.)
     # A valid task is required; values are otherwise independent of policy.
     n.task = {'options': {}}
     msg = OccupancyGrid(); msg.info.resolution = .1

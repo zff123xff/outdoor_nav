@@ -32,6 +32,7 @@ setup(
             "remote_stop_bridge = robot_launch.remote_stop_bridge:main",
             "mavros_global_rate = robot_launch.mavros_global_rate:main",
             "auto_set_gp_origin = robot_launch.auto_set_gp_origin:main",
+            "simulation_origin_receiver = robot_launch.simulation_origin_receiver:main",
             "lifecycle_service_relay = robot_launch.lifecycle_service_relay:main",
             "lifecycle_startup_watchdog = robot_launch.lifecycle_startup_watchdog:main",
         ],

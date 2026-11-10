@@ -6,6 +6,6 @@ def test_example_normalizes_gps_and_namespace():
     ns, task = load_example(Path(__file__).parents[1]/'config/examples/enu/point_goal.yaml',
         'point_goal', 'robot_2', (40., 113., 1200.))
     assert ns == 'robot_2'
-    assert task['task_type'] == 'point_goal'
+    assert task['task_id'] == '140'
     assert task['waypoints']
-    assert -90 <= task['waypoints'][0]['latitude'] <= 90
+    assert -90 <= task['waypoints'][0] <= 90

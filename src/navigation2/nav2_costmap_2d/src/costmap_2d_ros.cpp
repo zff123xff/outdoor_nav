@@ -96,6 +96,8 @@ Costmap2DROS::Costmap2DROS(const rclcpp::NodeOptions & options)
   declare_parameter("rolling_window", rclcpp::ParameterValue(false));
   declare_parameter("track_unknown_space", rclcpp::ParameterValue(false));
   declare_parameter("transform_tolerance", rclcpp::ParameterValue(0.3));
+  declare_parameter("visualization_ground_reference_frame", rclcpp::ParameterValue(std::string("")));
+  declare_parameter("visualization_ground_offset_z", rclcpp::ParameterValue(0.0));
   declare_parameter("trinary_costmap", rclcpp::ParameterValue(true));
   declare_parameter("unknown_cost_value", rclcpp::ParameterValue(static_cast<unsigned char>(0xff)));
   declare_parameter("update_frequency", rclcpp::ParameterValue(5.0));
@@ -148,6 +150,8 @@ Costmap2DROS::Costmap2DROS(
   declare_parameter("rolling_window", rclcpp::ParameterValue(false));
   declare_parameter("track_unknown_space", rclcpp::ParameterValue(false));
   declare_parameter("transform_tolerance", rclcpp::ParameterValue(0.3));
+  declare_parameter("visualization_ground_reference_frame", rclcpp::ParameterValue(std::string("")));
+  declare_parameter("visualization_ground_offset_z", rclcpp::ParameterValue(0.0));
   declare_parameter("trinary_costmap", rclcpp::ParameterValue(true));
   declare_parameter("unknown_cost_value", rclcpp::ParameterValue(static_cast<unsigned char>(0xff)));
   declare_parameter("update_frequency", rclcpp::ParameterValue(5.0));
@@ -238,7 +242,8 @@ Costmap2DROS::on_configure(const rclcpp_lifecycle::State & /*state*/)
   costmap_publisher_ = std::make_unique<Costmap2DPublisher>(
     shared_from_this(),
     layered_costmap_->getCostmap(), global_frame_,
-    "costmap", always_send_full_costmap_);
+    "costmap", always_send_full_costmap_, tf_buffer_,
+    visualization_ground_reference_frame_, visualization_ground_offset_z_);
 
   // Set the footprint
   if (use_radius_) {
@@ -373,6 +378,8 @@ Costmap2DROS::getParameters()
   get_parameter("rolling_window", rolling_window_);
   get_parameter("track_unknown_space", track_unknown_space_);
   get_parameter("transform_tolerance", transform_tolerance_);
+  get_parameter("visualization_ground_reference_frame", visualization_ground_reference_frame_);
+  get_parameter("visualization_ground_offset_z", visualization_ground_offset_z_);
   get_parameter("update_frequency", map_update_frequency_);
   get_parameter("width", map_width_meters_);
   get_parameter("plugins", plugin_names_);

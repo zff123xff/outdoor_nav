@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="巡检 UDP 传输（可选）"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="UE → 独立 UDP 9101"];
+n1 [label="校验 namespace / topic / 批次\n拒绝无效数据"];
+n2 [label="ROS targets/assigned → 巡检节点"];
+n3 [label="ROS targets/inspection_arrived"];
+n4 [label="序列化观察事件 JSON"];
+n5 [label="独立 UDP → UE 9001\n不改变原传感器桥，不做轴向/单位转换"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

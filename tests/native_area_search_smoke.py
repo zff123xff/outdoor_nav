@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Actual area Action, subprocess, live TF/cloud, map and FollowPath protocol."""
 import math
+import os
+import tempfile
 from pathlib import Path
 import time
+import yaml
 
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse
@@ -26,6 +29,13 @@ from bspline.msg import Bspline
 
 def main():
     config = str(Path(__file__).resolve().parents[1]/'src/external_pkg/co_search/co_search_nav/config/area_search.yaml')
+    config_directory = tempfile.TemporaryDirectory(prefix='area_filter_fixture_')
+    if os.environ.get('TEST_CLOUD_FILTER') == '1':
+        settings = yaml.safe_load(Path(config).read_text())
+        settings['co_search']['cloud_filter'].update(
+            enable_x_filter=False, min_x_m=100.0, max_x_m=101.0, voxel_size_m=.15)
+        config = str(Path(config_directory.name)/'area.yaml')
+        Path(config).write_text(yaml.safe_dump(settings))
     rclpy.init(args=['--ros-args', '-r', '__ns:=/area_fixture', '-p', 'config_file:='+config])
     fixture = Node('fixture')
     area = CoSearchExecutor()
@@ -58,10 +68,12 @@ def main():
         return FollowPath.Result()
     server = ActionServer(fixture, FollowPath, 'follow_path', follow,
                           cancel_callback=lambda h: CancelResponse.ACCEPT)
+    empty_cloud = False
     def sensors():
         stamp = fixture.get_clock().now().to_msg()
         transforms = []
-        for child, z in [('area_fixture/base_link', 0.), ('area_fixture/lidar', .5)]:
+        for child, z in [('area_fixture/base_link', 0.), ('area_fixture/lidar', .5),
+                         ('area_fixture/odom', 0.)]:
             tf = TransformStamped()
             tf.header = Header(stamp=stamp, frame_id='area_fixture/map')
             tf.child_frame_id = child
@@ -70,11 +82,14 @@ def main():
             transforms.append(tf)
         broadcaster.sendTransform(transforms)
         odom = Odometry()
-        odom.header = Header(stamp=stamp, frame_id='area_fixture/map')
+        odom.header = Header(stamp=stamp, frame_id=(
+            '' if os.environ.get('EMPTY_ODOM_FRAME') == '1' else 'area_fixture/map'))
         odom.child_frame_id = 'area_fixture/base_link'
         odom.pose.pose.orientation.w = 1.
         odom_pub.publish(odom)
         points = [(3.*math.cos(a*math.pi/360), 3.*math.sin(a*math.pi/360), -.5) for a in range(720)]
+        if empty_cloud:
+            points = []
         cloud_pub.publish(create_cloud_xyz32(Header(stamp=stamp, frame_id='area_fixture/lidar'), points))
     fixture.create_timer(.1, sensors)
     client = ActionClient(fixture, AreaSearch, 'area_search')
@@ -99,6 +114,27 @@ def main():
         assert paths[0].header.frame_id == 'area_fixture/map'
         assert any(v >= 0 for v in maps[-1].data)
         assert 0 < area.metrics['observed_ratio'] < 1
+        if os.environ.get('TEST_EMPTY_CLOUD') == '1':
+            empty_cloud = True
+            wait(lambda: area.engine.get('phase') == 'cloud_rejected', 'empty cloud diagnostic')
+            count = area.engine['clouds']
+            until = time.monotonic()+.8
+            while time.monotonic() < until:
+                executor.spin_once(timeout_sec=.05)
+            assert not result.done(), 'brief cloud rejection must not terminate exploration'
+            assert area.engine['clouds'] == count
+            empty_cloud = False
+            wait(lambda: area.engine.get('clouds', 0) > count, 'valid clouds resume')
+            assert not result.done()
+            empty_cloud = True
+            wait(result.done, 'persistent empty cloud timeout', timeout=10.)
+            assert result.result().status == 6
+            assert not result.result().result.success
+            assert 'empty upstream-filtered cloud' in result.result().result.message
+            assert 'input=0' in result.result().result.message
+            assert area.process is None and not area.handles and not area.pending
+            print('PASS: transient empty cloud retained task; valid cloud resumed; persistent empty cloud safely timed out with diagnostics')
+            return
         canceled = handle.cancel_goal_async()
         wait(canceled.done, 'cancel ACK')
         wait(result.done, 'Action canceled after process/navigation release')
@@ -112,6 +148,7 @@ def main():
             node.destroy_node()
         executor.shutdown()
         rclpy.try_shutdown()
+        config_directory.cleanup()
 
 
 if __name__ == '__main__':

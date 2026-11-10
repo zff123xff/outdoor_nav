@@ -1,0 +1,19 @@
+/**:
+  ros__parameters:
+    stand_off_m: 9.0
+    max_range_m: 10.0
+    heading_tolerance_rad: 0.15
+    linear_stop_mps: 0.05
+    angular_stop_rps: 0.05
+    settle_s: 0.5
+    dwell_s: 2.5
+    pose_max_age_s: 0.5
+    target_timeout_s: 120.0
+    assignment_timeout_s: 10.0
+
+    # 新增 143 模式由启动开关 inspection_search_mode:=true 开启；false 保留分配目标巡检。
+    # 以下参数用于“区域搜索 -> 暂停 -> 观察到达上报 -> 停留 -> 继续搜索”。
+    marker_topic: targets/markers             # YOLO 三维观测，必须在本机器人的地图坐标系
+    marker_max_age_s: 1.5                     # 只接收新鲜观测，单位秒
+    observation_merge_m: 1.5                  # 已处理位置的去重距离；即使 Marker ID 改变也不重复巡检
+    search_service_timeout_s: 15.0            # 搜索/暂停/恢复/巡检服务准备及响应的等待时间

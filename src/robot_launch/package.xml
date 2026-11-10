@@ -10,8 +10,11 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>task_pipeline</exec_depend>
+  <exec_depend>yolo_detector</exec_depend>
+  <exec_depend>rtmp_image_bridge</exec_depend>
   <exec_depend>patrol_node</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>

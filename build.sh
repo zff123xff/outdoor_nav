@@ -14,4 +14,7 @@ colcon build --symlink-install --packages-skip fast_lio go2w_driver --cmake-args
   -DROS_EDITION=ROS2 -DDISTRO_ROS="${ROS_DISTRO:-humble}" \
   -DBUILD_TESTING=OFF "$@"
 
+# Colcon setup scripts reference optional unset variables; allow that while sourcing.
+set +u
 source "$(pwd)"/install/setup.sh
+set -u

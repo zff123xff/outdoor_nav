@@ -2,6 +2,29 @@ import math
 
 WGS84_R = 6378137.0
 
+
+def enu_to_lla(east, north, up, lat0_deg, lon0_deg, alt0_m):
+    """Invert the spherical projection used by nav2_input_bridge."""
+    if not all(math.isfinite(v) for v in (east, north, up, lat0_deg, lon0_deg, alt0_m)):
+        raise ValueError('ENU position and geographic reference must be finite')
+    if abs(lat0_deg) > 90 or abs(lon0_deg) > 180:
+        raise ValueError('Geographic reference is outside latitude/longitude bounds')
+    radius = math.hypot(east, north)
+    angular = radius / WGS84_R
+    if angular >= math.pi:
+        raise ValueError('ENU distance must be less than half the Earth circumference')
+    if radius < 1e-9:
+        return lat0_deg, lon0_deg, alt0_m + up
+    lat0_r = math.radians(lat0_deg)
+    lon0_r = math.radians(lon0_deg)
+    sin_c, cos_c = math.sin(angular), math.cos(angular)
+    sin_lat = cos_c * math.sin(lat0_r) + north * sin_c * math.cos(lat0_r) / radius
+    lat_r = math.asin(max(-1.0, min(1.0, sin_lat)))
+    lon_r = lon0_r + math.atan2(
+        east * sin_c, radius * math.cos(lat0_r) * cos_c - north * math.sin(lat0_r) * sin_c)
+    return math.degrees(lat_r), (math.degrees(lon_r) + 180.) % 360. - 180., alt0_m + up
+
+
 def lla_to_enu(
     lat_deg: float,
     lon_deg: float,

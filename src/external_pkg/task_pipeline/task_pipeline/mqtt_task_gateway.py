@@ -1,6 +1,6 @@
 """MQTT JSON tasks -> the same typed topic used by example senders."""
 import json
-import queue
+import threading
 import uuid
 from urllib.parse import urlparse
 
@@ -22,7 +22,10 @@ class MqttTaskGateway(Node):
         self.request_topic = f'robots/{ns}/task'
         self.status_topic = f'robots/{ns}/taskstatus'
         self.events_topic = f'robots/{ns}/task_feedback'
-        self.pending = queue.Queue(maxsize=64)
+        # MQTT callbacks run in another thread; retain at most one message
+        # until the ROS timer can hand it to the single-task dispatcher.
+        self.pending = None
+        self.pending_lock = threading.Lock()
         self.pub = self.create_publisher(Task, 'task', 10)
         self.create_subscription(TaskStatus, 'robot_task_status', self.status, 10)
         from std_msgs.msg import String
@@ -51,17 +54,26 @@ class MqttTaskGateway(Node):
         if message.retain:
             self.get_logger().warning('Ignoring retained motion task')
             return
+        with self.pending_lock:
+            if self.pending is None:
+                self.pending = message.payload
+                return
         try:
-            self.pending.put_nowait(message.payload)
-        except queue.Full:
-            self.get_logger().error('MQTT ingress queue full')
+            request = json.loads(message.payload)
+            task_id = request.get('task_id') if isinstance(request, dict) else None
+        except (ValueError, TypeError):
+            task_id = None
+        self.mqtt.publish(self.events_topic, json.dumps(dict(
+            event='rejected', task_id=task_id,
+            message='another MQTT task is awaiting dispatch')), qos=1)
 
     def dispatch(self):
         if not self.pub.get_subscription_count():
             return
-        try:
-            payload = self.pending.get_nowait()
-        except queue.Empty:
+        with self.pending_lock:
+            payload = self.pending
+            self.pending = None
+        if payload is None:
             return
         try:
             self.pub.publish(to_message(json.loads(payload)))

@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='todo',
     maintainer_email='todo@example.com',
-    description='FIFO primitive dispatch, MQTT ingress, multi-point execution and example publishers.',
+    description='FIFO primitive dispatch, independent target inspection, MQTT ingress and example publishers.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
@@ -29,6 +29,10 @@ setup(
             'send_patrol = task_pipeline.examples.sender:send_patrol',
             'pipeline_dispatcher = task_pipeline.dispatcher:main',
             'mqtt_task_gateway = task_pipeline.mqtt_task_gateway:main',
+            'inspection_udp_bridge = task_pipeline.inspection_udp_bridge:main',
+            'target_inspection_executor = task_pipeline.inspection_executor:main',
+            'search_inspection_executor = task_pipeline.search_inspection_executor:main',
+            'send_target_inspection = task_pipeline.examples.sender:send_target_inspection',
             'send_area_search = task_pipeline.examples.sender:send_area_search',
         ],
     },

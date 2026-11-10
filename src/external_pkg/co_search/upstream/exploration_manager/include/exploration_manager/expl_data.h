@@ -187,7 +187,9 @@ struct ExplorationData
     std::vector<uint64_t>             peer_assigned_regions_epoch_;
     std::vector<std::vector<uint8_t>> peer_assigned_regions_online_mask_;
 
+    // 目标承诺（视点锁）：跨规划周期继续执行同一个目标，抑制近似等价候选间的来回切换。
     Eigen::Vector3d locked_viewpoint_;
+    double          locked_viewpoint_yaw_{ 0.0 };
     double          locked_viewpoint_until_sec_{ -1.0 };
     int             locked_grid_id_{ -1 };
     bool            locked_viewpoint_valid_{ false };
@@ -211,6 +213,13 @@ struct ExplorationParam
     double snn_path_shorten_angle_deg_;
     int    snn_traj_max_waypoints_;
     double snn_traj_rdp_epsilon_;
+    // Soft penalties added when selecting a frontier/viewpoint from its A* polyline.
+    // They are measured in approximate seconds, matching ViewNode::computeCost.
+    double path_turn_penalty_s_per_pi_{ 0.7 };
+    double path_corner_penalty_s_{ 0.4 };
+    double path_reverse_penalty_s_{ 1.5 };
+    double path_detour_penalty_s_per_ratio_{ 1.0 };
+    double min_path_length_m_{ 0.0 };
     bool   snn_path_sticky_enable_;
     double snn_max_detour_ratio_;
     double snn_replan_min_move_m_;
@@ -225,6 +234,7 @@ struct ExplorationParam
     double viewpoint_lock_sec_;
     double viewpoint_lock_max_dist_m_;
     double viewpoint_lock_max_shift_m_;
+    double viewpoint_lock_switch_improve_ratio_;
     double snn_cache_min_arc_m_;
     double snn_cache_goal_end_tol_m_;
     int    snn_fail_astar_trigger_count_;

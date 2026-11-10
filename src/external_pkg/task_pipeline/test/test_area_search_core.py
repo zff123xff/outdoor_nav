@@ -10,14 +10,15 @@ CONFIG = Path(__file__).parents[1]/'config/examples/enu/area_search.yaml'
 
 
 def task():
-    return yaml.safe_load(CONFIG.read_text())
+    data = yaml.safe_load(CONFIG.read_text())
+    return dict(data['task']['params'], robot_namespace='robot_1', mission_id='rectangle', coordinate_mode='enu')
 
 
 def test_sender_preserves_rotated_rectangle():
     ns, request = load_example(CONFIG, 'area_search', 'robot_2', (40., 113., 1200.))
     assert ns == 'robot_2'
-    assert request['task_type'] == 'area_search'
-    assert request['area']['length_m'] == task()['rectangle']['length_m']
+    assert request['task_id'] == '142'
+    assert request['length_m'] == task()['rectangle']['length_m']
 
 
 def test_rotated_rectangle_and_gps_geometry():

@@ -58,7 +58,19 @@ bool PoseProgressChecker::check(geometry_msgs::msg::PoseStamped & current_pose)
     resetBaselinePose(current_pose2d);
     return true;
   }
-  return clock_->now() - baseline_time_ <= time_allowance_;
+  const double elapsed = (clock_->now() - baseline_time_).seconds();
+  if (elapsed > time_allowance_.seconds()) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("nav2_controller.PoseProgressChecker"),
+      "Progress timeout: elapsed=%.3fs limit=%.3fs displacement=%.4fm required>%.4fm "
+      "rotation=%.4frad required>%.4frad baseline=(%.4f,%.4f,%.4f) current=(%.4f,%.4f,%.4f)",
+      elapsed, time_allowance_.seconds(), pose_distance(current_pose2d, baseline_pose_), radius_,
+      poseAngleDistance(current_pose2d, baseline_pose_), required_movement_angle_,
+      baseline_pose_.x, baseline_pose_.y, baseline_pose_.theta,
+      current_pose2d.x, current_pose2d.y, current_pose2d.theta);
+    return false;
+  }
+  return true;
 }
 
 bool PoseProgressChecker::isRobotMovedEnough(const geometry_msgs::msg::Pose2D & pose)

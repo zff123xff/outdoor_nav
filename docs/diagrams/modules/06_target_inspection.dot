@@ -1,0 +1,20 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="143 目标巡检"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="启动：快照最新有效目标批次\n无批次最多等待 10 s"];
+n1 [label="根据当前三维位置选择最近待处理目标"];
+n2 [label="超出 10 m：导航至默认 9 m 停靠点\n范围内：保持位置"];
+n3 [label="等待新 TF → 朝向目标"];
+n4 [label="验证 ≤10 m、角度≤0.15 rad\n连续停稳≥0.5 s"];
+n5 [label="发布 inspection_arrived 一次"];
+n6 [label="非阻塞等待 2.5 s → 下一个目标"];
+n7 [label="失败目标跳过并计数\n取消先收尾；全部处理后返回汇总"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+n5 -> n6 [label=""];
+n6 -> n7 [label=""];
+}

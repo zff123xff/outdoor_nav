@@ -53,6 +53,22 @@ public:
     return checker.footprintCostAtPose(x, y, yaw, footprint) < 253;
   }
 
+  bool isRetainedPathPoseSafe(double x, double y, double heading) override
+  {
+    nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *> checker(costmap_);
+    std::vector<geometry_msgs::msg::Point> footprint(4);
+    footprint[0].x = .4; footprint[0].y = .27;
+    footprint[1].x = .4; footprint[1].y = -.27;
+    footprint[2].x = -.4; footprint[2].y = -.27;
+    footprint[3].x = -.4; footprint[3].y = .27;
+    return checker.footprintCostAtPose(x, y, heading, footprint) < 254;
+  }
+  uint64_t selectedRouteId() const {return path_hysteresis_.currentId();}
+  double traversalWeight() const {return planner_->w_traversal_cost_;}
+  double lengthWeight() const {return planner_->w_euc_cost_;}
+  void configurePathSelection(bool enabled, double interval = 2.)
+  {path_hysteresis_.enabled = enabled; path_hysteresis_.min_switch_interval = interval;}
+
   void configureHeading(bool stateful = true)
   {
     use_rotate_to_heading_ = true;
@@ -443,4 +459,99 @@ TEST(LocalPathSmoothing, IterationsAreValidatedAndZeroKeepsOriginalPolyline)
   ASSERT_EQ(path.size(), guide.size());
   EXPECT_DOUBLE_EQ(path[1].x, guide[1].x);
   EXPECT_DOUBLE_EQ(path[1].y, guide[1].y);
+}
+
+TEST(PathSelectionIntegration, RepeatedThetaPlansAroundAWallKeepOneRoute)
+{
+  nav2_costmap_2d::Costmap2D map(100, 80, .1, 0., 0., 0);
+  for (unsigned int x = 41; x <= 59; ++x) {
+    for (unsigned int y = 16; y <= 64; ++y) {map.setCost(x, y, 253);}
+  }
+  for (unsigned int x = 45; x <= 55; ++x) {
+    for (unsigned int y = 20; y <= 60; ++y) {map.setCost(x, y, 254);}
+  }
+  LocalPlanController controller(&map);
+  LocalPlanController baseline(&map);
+  baseline.configurePathSelection(false, 0.);
+  nav_msgs::msg::Path global; global.header.frame_id = "map";
+  for (int i = 0; i <= 80; ++i) {
+    auto p = backupPose(1.+i*.1, 4.); global.poses.push_back(p);
+  }
+  controller.setPlan(global);
+  baseline.setPlan(global);
+  int previous_side = 0, baseline_switches = 0;
+  for (int cycle = 0; cycle < 16; ++cycle) {
+    for (unsigned int x = 0; x < 100; ++x) {
+      for (unsigned int y = 0; y < 80; ++y) {
+        if (map.getCost(x, y) < 253) {map.setCost(x, y, (cycle%2 == (y>40)) ? 50 : 0);}
+      }
+    }
+    const auto selected = controller.getLocalPlan(global.poses.front());
+    ASSERT_FALSE(selected.poses.empty());
+    EXPECT_EQ(controller.selectedRouteId(), 1u);
+    const auto original = baseline.getLocalPlan(global.poses.front());
+    ASSERT_FALSE(original.poses.empty());
+    double deviation = 0.;
+    for (const auto & p : original.poses) {deviation += p.pose.position.y-4.;}
+    const int side = deviation > 0. ? 1 : -1;
+    if (previous_side && side != previous_side) {++baseline_switches;}
+    previous_side = side;
+  }
+  EXPECT_GT(baseline_switches, 0);
+}
+
+TEST(PathSelectionParameters, InvalidValuesRejectAtomicallyAndDisableClearsSelection)
+{
+  nav2_costmap_2d::Costmap2D map(50, 50, .1, 0., 0., 0);
+  LocalPlanController controller(&map); controller.configureHeading();
+  nav_msgs::msg::Path guide; guide.header.frame_id = "map";
+  guide.poses = {backupPose(1., 1.), backupPose(3., 1.)};
+  controller.setPlan(guide); controller.getLocalPlan(guide.poses.front());
+  ASSERT_NE(controller.selectedRouteId(), 0u);
+  for (const auto & key : {"switch_penalty", "min_switch_interval"}) {
+    for (double bad : {-1., std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::quiet_NaN()})
+    {
+      EXPECT_FALSE(controller.dynamicParametersCallback({
+        rclcpp::Parameter("FollowPath.enable_path_hysteresis", false),
+        rclcpp::Parameter(std::string("FollowPath.")+key, bad)}).successful);
+      EXPECT_NE(controller.selectedRouteId(), 0u);
+    }
+    EXPECT_FALSE(controller.dynamicParametersCallback({
+      rclcpp::Parameter(std::string("FollowPath.")+key, 1)}).successful);
+  }
+  EXPECT_FALSE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.log_path_switch", 1)}).successful);
+  EXPECT_TRUE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.enable_path_hysteresis", false),
+    rclcpp::Parameter("FollowPath.log_path_switch", true)}).successful);
+  EXPECT_EQ(controller.selectedRouteId(), 0u);
+}
+
+TEST(LocalPlanRegression, ThetaWeightsUpdatePlannerAndRejectInvalidBatch)
+{
+  nav2_costmap_2d::Costmap2D costmap(120, 120, 0.1, -6.0, -6.0, 0);
+  LocalPlanController controller(&costmap);
+  controller.configureHeading();
+  EXPECT_TRUE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.w_traversal_cost", 12.0),
+    rclcpp::Parameter("FollowPath.w_euc_cost", 0.75)}).successful);
+  EXPECT_DOUBLE_EQ(controller.traversalWeight(), 12.0);
+  EXPECT_DOUBLE_EQ(controller.lengthWeight(), 0.75);
+  for (double bad : {-1.0, std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::quiet_NaN()})
+  {
+    EXPECT_FALSE(controller.dynamicParametersCallback({
+      rclcpp::Parameter("FollowPath.w_traversal_cost", bad)}).successful);
+  }
+  EXPECT_FALSE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.w_traversal_cost", 30.0),
+    rclcpp::Parameter("FollowPath.w_euc_cost", 0.0)}).successful);
+  EXPECT_DOUBLE_EQ(controller.traversalWeight(), 12.0);
+  EXPECT_DOUBLE_EQ(controller.lengthWeight(), 0.75);
+  EXPECT_FALSE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.w_euc_cost", 1)}).successful);
+  EXPECT_TRUE(controller.dynamicParametersCallback({
+    rclcpp::Parameter("FollowPath.w_traversal_cost", 0.0)}).successful);
+  EXPECT_DOUBLE_EQ(controller.traversalWeight(), 0.0);
 }

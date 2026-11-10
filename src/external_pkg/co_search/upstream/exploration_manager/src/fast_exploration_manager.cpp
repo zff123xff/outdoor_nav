@@ -4,6 +4,7 @@
 #include <active_perception/graph_search.h>
 #include <active_perception/perception_utils.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exploration_manager/fast_exploration_manager.h>
@@ -510,6 +511,21 @@ void FastExplorationManager::initialize(rclcpp::Node::SharedPtr node)
     ep_->snn_path_rdp_epsilon_         = node->has_parameter("exploration/snn_path_rdp_epsilon")
                                              ? node->get_parameter("exploration/snn_path_rdp_epsilon").as_double()
                                              : node->declare_parameter<double>("exploration/snn_path_rdp_epsilon", 0.35);
+    ep_->path_turn_penalty_s_per_pi_ = std::max(0.0, node->has_parameter("exploration/path_turn_penalty_s_per_pi")
+                                                          ? node->get_parameter("exploration/path_turn_penalty_s_per_pi").as_double()
+                                                          : node->declare_parameter<double>("exploration/path_turn_penalty_s_per_pi", 0.7));
+    ep_->path_corner_penalty_s_ = std::max(0.0, node->has_parameter("exploration/path_corner_penalty_s")
+                                                   ? node->get_parameter("exploration/path_corner_penalty_s").as_double()
+                                                   : node->declare_parameter<double>("exploration/path_corner_penalty_s", 0.4));
+    ep_->path_reverse_penalty_s_ = std::max(0.0, node->has_parameter("exploration/path_reverse_penalty_s")
+                                                    ? node->get_parameter("exploration/path_reverse_penalty_s").as_double()
+                                                    : node->declare_parameter<double>("exploration/path_reverse_penalty_s", 1.5));
+    ep_->path_detour_penalty_s_per_ratio_ = std::max(0.0, node->has_parameter("exploration/path_detour_penalty_s_per_ratio")
+                                                           ? node->get_parameter("exploration/path_detour_penalty_s_per_ratio").as_double()
+                                                           : node->declare_parameter<double>("exploration/path_detour_penalty_s_per_ratio", 1.0));
+    ep_->min_path_length_m_ = std::max(0.0, node->has_parameter("exploration/min_path_length_m")
+                                                ? node->get_parameter("exploration/min_path_length_m").as_double()
+                                                : node->declare_parameter<double>("exploration/min_path_length_m", 3.0));
     ep_->snn_path_rdp_max_epsilon_     = node->has_parameter("exploration/snn_path_rdp_max_epsilon")
                                              ? node->get_parameter("exploration/snn_path_rdp_max_epsilon").as_double()
                                              : node->declare_parameter<double>("exploration/snn_path_rdp_max_epsilon", 1.0);
@@ -534,6 +550,28 @@ void FastExplorationManager::initialize(rclcpp::Node::SharedPtr node)
     ep_->degenerate_goal_dist_m_       = node->has_parameter("exploration/degenerate_goal_dist_m")
                                              ? node->get_parameter("exploration/degenerate_goal_dist_m").as_double()
                                              : node->declare_parameter<double>("exploration/degenerate_goal_dist_m", 0.05);
+    // 目标承诺（视点锁）：0 秒禁用；跨周期继续执行同一目标，只在更优候选达到改善比例时才换。
+    ep_->viewpoint_lock_sec_ =
+        node->has_parameter("exploration/viewpoint_lock_sec")
+            ? node->get_parameter("exploration/viewpoint_lock_sec").as_double()
+            : node->declare_parameter<double>("exploration/viewpoint_lock_sec", 0.0);
+    ep_->viewpoint_lock_max_dist_m_ =
+        node->has_parameter("exploration/viewpoint_lock_max_dist_m")
+            ? node->get_parameter("exploration/viewpoint_lock_max_dist_m").as_double()
+            : node->declare_parameter<double>("exploration/viewpoint_lock_max_dist_m", 4.0);
+    ep_->viewpoint_lock_max_shift_m_ =
+        node->has_parameter("exploration/viewpoint_lock_max_shift_m")
+            ? node->get_parameter("exploration/viewpoint_lock_max_shift_m").as_double()
+            : node->declare_parameter<double>("exploration/viewpoint_lock_max_shift_m", 2.0);
+    ep_->viewpoint_lock_switch_improve_ratio_ =
+        node->has_parameter("exploration/viewpoint_lock_switch_improve_ratio")
+            ? node->get_parameter("exploration/viewpoint_lock_switch_improve_ratio").as_double()
+            : node->declare_parameter<double>("exploration/viewpoint_lock_switch_improve_ratio", 0.25);
+    if (!std::isfinite(ep_->viewpoint_lock_sec_) || ep_->viewpoint_lock_sec_ < 0.0)
+        ep_->viewpoint_lock_sec_ = 0.0;
+    ep_->viewpoint_lock_max_dist_m_          = std::max(0.0, ep_->viewpoint_lock_max_dist_m_);
+    ep_->viewpoint_lock_max_shift_m_         = std::max(0.0, ep_->viewpoint_lock_max_shift_m_);
+    ep_->viewpoint_lock_switch_improve_ratio_ = std::min(0.95, std::max(0.0, ep_->viewpoint_lock_switch_improve_ratio_));
     ep_->liveness_enable_              = node->has_parameter("exploration/liveness_enable") ? node->get_parameter("exploration/liveness_enable").as_bool()
                                                                                             : node->declare_parameter<bool>("exploration/liveness_enable", true);
     ep_->stall_escape_after_waits_     = std::max(1, static_cast<int>(node->has_parameter("exploration/stall_escape_after_waits")
@@ -764,6 +802,10 @@ void FastExplorationManager::initialize(rclcpp::Node::SharedPtr node)
         node->has_parameter("exploration/ydd") ? node->get_parameter("exploration/ydd").as_double() : node->declare_parameter<double>("exploration/ydd", -1.0);
     ViewNode::w_dir_ = node->has_parameter("exploration/w_dir") ? node->get_parameter("exploration/w_dir").as_double()
                                                                 : node->declare_parameter<double>("exploration/w_dir", -1.0);
+    ViewNode::path_turn_penalty_s_per_pi_ = ep_->path_turn_penalty_s_per_pi_;
+    ViewNode::path_corner_penalty_s_ = ep_->path_corner_penalty_s_;
+    ViewNode::path_reverse_penalty_s_ = ep_->path_reverse_penalty_s_;
+    ViewNode::path_detour_penalty_s_per_ratio_ = ep_->path_detour_penalty_s_per_ratio_;
 
     ViewNode::astar_.reset(new Astar);
     ViewNode::astar_->init(node, edt_environment_);
@@ -2242,6 +2284,144 @@ int FastExplorationManager::planExploreMotion(const Eigen::Vector3d& pos, const 
         }
     }
 
+    auto pathLength2D = [](const std::vector<Eigen::Vector3d>& path) {
+        double length = 0.0;
+        for (size_t i = 1; i < path.size(); ++i)
+            length += (path[i].head<2>() - path[i - 1].head<2>()).norm();
+        return length;
+    };
+    // Prefer a longer, reachable route when the selected path is shorter than
+    // configured. Search only this cycle's candidate set and current robot region
+    // so the preference cannot override assignment or target admission checks.
+    if (ep_->min_path_length_m_ > 0.0 && !goal_candidates.empty())
+    {
+        std::vector<Eigen::Vector3d> current_path;
+        ViewNode::computeCost(pos, next_pos, yaw[0], next_yaw, vel, yaw[1], current_path);
+        const double current_path_length = pathLength2D(current_path);
+        if (current_path_length + 1e-6 < ep_->min_path_length_m_)
+        {
+            const double max_dist = GetMaxLocalGoalDist(*ep_);
+            const int current_region = region_allocator_->ownerRegionOfPoint(next_pos);
+            int best_idx = -1;
+            double best_cost = std::numeric_limits<double>::infinity();
+            double best_path_length = 0.0;
+            for (int i = 0; i < static_cast<int>(goal_candidates.size()); ++i)
+            {
+                Eigen::Vector3d candidate = goal_candidates[i].first;
+                candidate.z() = 0.3;
+                const double distance = (candidate.head<2>() - pos.head<2>()).norm();
+                if (distance < 0.1 || distance > max_dist || !IsReachablePoint(candidate))
+                    continue;
+                if (current_region >= 0 && region_allocator_->ownerRegionOfPoint(candidate) != current_region)
+                    continue;
+                if (!admitTarget(pos, candidate))
+                    continue;
+                std::vector<Eigen::Vector3d> candidate_path;
+                const double cost = ViewNode::computeCost(pos, candidate, yaw[0], goal_candidates[i].second, vel, yaw[1], candidate_path)
+                    + peerCoveragePenalty(candidate);
+                const double candidate_path_length = pathLength2D(candidate_path);
+                if (candidate_path_length + 1e-6 < ep_->min_path_length_m_)
+                    continue;
+                if (cost < best_cost)
+                {
+                    best_cost = cost;
+                    best_idx = i;
+                    best_path_length = candidate_path_length;
+                }
+            }
+            if (best_idx >= 0)
+            {
+                next_pos = goal_candidates[best_idx].first;
+                next_pos.z() = 0.3;
+                next_yaw = goal_candidates[best_idx].second;
+                RCLCPP_INFO(rclcpp::get_logger("exploration_manager"),
+                            "[planExploreMotion][d%d] minimum path length %.2fm: replace %.2fm route with %.2fm route",
+                            ep_->drone_id_, ep_->min_path_length_m_, current_path_length, best_path_length);
+            }
+            else
+            {
+                RCLCPP_WARN_THROTTLE(rclcpp::get_logger("exploration_manager"), *node_->get_clock(), 5000,
+                                     "[planExploreMotion][d%d] no reachable same-region route >= %.2fm; keeping %.2fm route",
+                                     ep_->drone_id_, ep_->min_path_length_m_, current_path_length);
+            }
+        }
+    }
+
+    // ============ 目标承诺（视点锁）：抑制跨周期在近似等价前沿/视点之间来回切换 ============
+    // 每个规划周期都把候选从零重算一遍，两个代价相近的目标会随位姿和地图的微小变化
+    // 交替胜出，而执行端每收到一条 path 就重新下发 FollowPath，于是车体被反复掉头。
+    // 这里在最终目标确定后加一层承诺：旧目标仍然是真实存在的前沿、尚未到达、且新目标
+    // 的代价没有明显更优时，继续执行旧目标。锁定期到期后重新做一次完整决策。
+    if (ep_->viewpoint_lock_sec_ > 1e-6 && next_pos.allFinite())
+    {
+        const double now_sec    = node_->now().seconds();
+        const double arrive_dist = std::max(ep_->viewpoint_arrived_dist_m_, 0.3);
+        const double best_dist   = (next_pos.head<2>() - pos.head<2>()).norm();
+        bool         keep_locked = false;
+
+        if (ed_->locked_viewpoint_valid_ && now_sec < ed_->locked_viewpoint_until_sec_)
+        {
+            const Eigen::Vector3d locked      = ed_->locked_viewpoint_;
+            const double          locked_dist = (locked.head<2>() - pos.head<2>()).norm();
+            // 活性：锁定的目标附近必须仍然存在真实前沿质心，否则说明它已被探索完或被丢弃。
+            double live_gap = std::numeric_limits<double>::infinity();
+            for (const auto& ftr : ed_->points_)
+                live_gap = std::min(live_gap, (ftr.head<2>() - locked.head<2>()).norm());
+            std::vector<Eigen::Vector3d> locked_path;
+            ViewNode::computeCost(pos, locked, yaw[0], ed_->locked_viewpoint_yaw_, vel, yaw[1], locked_path);
+            const bool locked_path_long_enough = ep_->min_path_length_m_ <= 0.0 ||
+                pathLength2D(locked_path) + 1e-6 >= ep_->min_path_length_m_;
+            const bool alive = locked_dist > arrive_dist && live_gap <= std::max(0.1, ep_->viewpoint_lock_max_shift_m_)
+                && locked_path_long_enough;
+            if (alive)
+            {
+                std::vector<Eigen::Vector3d> tmp_path;
+                const double cost_new = ViewNode::computeCost(pos, next_pos, yaw[0], next_yaw, vel, yaw[1], tmp_path);
+                const double cost_old = ViewNode::computeCost(pos, locked, yaw[0], ed_->locked_viewpoint_yaw_, vel, yaw[1], tmp_path);
+                const bool clearly_better = cost_new < cost_old * (1.0 - ep_->viewpoint_lock_switch_improve_ratio_) - 1e-6;
+                if (!clearly_better)
+                {
+                    keep_locked = true;
+                    if ((locked.head<2>() - next_pos.head<2>()).norm() > 0.2)
+                        RCLCPP_INFO(rclcpp::get_logger("exploration_manager"),
+                                    "[goal_lock][d%d] hold target [%.2f, %.2f] over [%.2f, %.2f] (cost %.2f vs %.2f, shift %.2fm)",
+                                    ep_->drone_id_, locked.x(), locked.y(), next_pos.x(), next_pos.y(), cost_old, cost_new,
+                                    (locked.head<2>() - next_pos.head<2>()).norm());
+                }
+                else
+                {
+                    RCLCPP_INFO(rclcpp::get_logger("exploration_manager"),
+                                "[goal_lock][d%d] switch [%.2f, %.2f] -> [%.2f, %.2f] (cost %.2f -> %.2f, better than %.0f%%)",
+                                ep_->drone_id_, locked.x(), locked.y(), next_pos.x(), next_pos.y(), cost_old, cost_new,
+                                100.0 * ep_->viewpoint_lock_switch_improve_ratio_);
+                }
+            }
+            else
+            {
+                RCLCPP_INFO(rclcpp::get_logger("exploration_manager"),
+                            "[goal_lock][d%d] release locked target [%.2f, %.2f] (alive=%d dist=%.2fm live_gap=%.2fm)", ep_->drone_id_,
+                            locked.x(), locked.y(), static_cast<int>(alive), locked_dist, live_gap);
+            }
+        }
+
+        if (keep_locked)
+        {
+            next_pos = ed_->locked_viewpoint_;
+            next_yaw = ed_->locked_viewpoint_yaw_;
+        }
+        else if (best_dist > arrive_dist)
+        {
+            ed_->locked_viewpoint_             = next_pos;
+            ed_->locked_viewpoint_yaw_         = next_yaw;
+            ed_->locked_viewpoint_until_sec_   = now_sec + ep_->viewpoint_lock_sec_;
+            ed_->locked_viewpoint_valid_       = true;
+        }
+        else
+        {
+            ed_->locked_viewpoint_valid_ = false;
+        }
+    }
+
     RCLCPP_INFO(rclcpp::get_logger("exploration_manager"), "[planExploreMotion] 开始位置: [%.2f, %.2f, %.2f], 航向: %.2f", pos.x(), pos.y(), pos.z(), yaw[0]);
     RCLCPP_INFO(rclcpp::get_logger("exploration_manager"), "[planExploreMotion] 下一个视点: [%.2f, %.2f, %.2f], 航向: %.2f", next_pos.x(), next_pos.y(),
                 next_pos.z(), next_yaw);
@@ -2452,6 +2632,7 @@ int FastExplorationManager::planExploreMotion(const Eigen::Vector3d& pos, const 
                                  ed_->next_pos_.x(), ed_->next_pos_.y(), active_grids.size());
             // P0-2：准入失败同样要落隔离表，否则下一周期仍会选出同一目标而无限等待；
             // 已在隔离期内不重复计数，避免指数退避无界增长。
+            ed_->locked_viewpoint_valid_ = false;
             if (!isTargetQuarantined(ed_->next_pos_, pos))
                 recordTargetFailure(ed_->next_pos_);
             return HandleStallBeforeWait(pos, vel, acc, yaw);
@@ -2463,6 +2644,8 @@ int FastExplorationManager::planExploreMotion(const Eigen::Vector3d& pos, const 
     {
         const Vector3d failed_target = ed_->next_pos_;
         recordTargetFailure(failed_target);
+        // 规划失败的目标不再作为承诺目标，下一周期重新决策。
+        ed_->locked_viewpoint_valid_ = false;
         const double now_sec_pf = node_->now().seconds();
         consecutive_plan_fail_++;
         const bool   fallback_enabled        = ep_->plan_fail_fallback_trigger_count_ > 0;
@@ -2803,18 +2986,20 @@ int FastExplorationManager::planTrajToView(const Vector3d& pos, const Vector3d& 
  **/
 int FastExplorationManager::updateFrontierStruct(const Eigen::Vector3d& pos)
 {
-    auto t1 = node_->now();
-    auto t2 = t1;
+    using SteadyClock = std::chrono::steady_clock;
+    auto stage_start = SteadyClock::now();
     ed_->views_.clear();
 
     // 从SDF地图中检测已知和未知区域的交界，并分组为簇
+    RCLCPP_INFO(node_->get_logger(), "[frontier_diag] stage=search_frontiers begin");
     frontier_finder_->searchFrontiers(pos);
-
-    double frontier_time = (node_->now() - t1).seconds();  //边界搜索耗时
-    t1                   = node_->now();
+    RCLCPP_INFO(node_->get_logger(), "[frontier_diag] stage=search_frontiers done elapsed_ms=%.1f",
+                std::chrono::duration<double, std::milli>(SteadyClock::now() - stage_start).count());
 
     // 计算所有边界簇的候选视点 (x, y, z, yaw)，并筛选出信息量大的视点;  //确定哪些边界值得探索
     // frontier_finder_->computeFrontiersToVisit(new_grid);
+    stage_start = SteadyClock::now();
+    RCLCPP_INFO(node_->get_logger(), "[frontier_diag] stage=viewpoint_sampling begin");
     frontier_finder_->computeFrontiersToVisit();
 
     // 获取更新后的边界信息
@@ -2824,6 +3009,9 @@ int FastExplorationManager::updateFrontierStruct(const Eigen::Vector3d& pos)
 
     // 获取边界的最佳视点信息
     frontier_finder_->getTopViewpointsInfo(pos, ed_->points_, ed_->yaws_, ed_->averages_);
+    RCLCPP_INFO(node_->get_logger(), "[frontier_diag] stage=viewpoint_sampling done elapsed_ms=%.1f active_frontiers=%zu viewpoints=%zu",
+                std::chrono::duration<double, std::milli>(SteadyClock::now() - stage_start).count(),
+                ed_->frontiers_.size(), ed_->points_.size());
 
     // for (int i = 0; i < ed_->points_.size(); ++i)
     // {
@@ -2842,18 +3030,12 @@ int FastExplorationManager::updateFrontierStruct(const Eigen::Vector3d& pos)
         return 0;
     }
 
-    double view_time = (node_->now() - t1).seconds();
-    t1               = node_->now();
-
     // 更新边界成本矩阵, 为后续任务分配（如 CVRP）计算边界间的距离或信息增益成本
+    stage_start = SteadyClock::now();
+    RCLCPP_INFO(node_->get_logger(), "[frontier_diag] stage=cost_matrix begin active_frontiers=%zu", ed_->frontiers_.size());
     frontier_finder_->updateFrontierCostMatrix();
-
-    double mat_time   = (node_->now() - t1).seconds();
-    double total_time = frontier_time + view_time + mat_time;
-    // RCLCPP_INFO(rclcpp::get_logger("exploration_manager"), "Drone %d: frontier t: %lf, viewpoint t: %lf, mat: %lf", ep_->drone_id_, frontier_time, view_time,
-    // mat_time);
-
-    // RCLCPP_INFO(rclcpp::get_logger("exploration_manager"), "Total t: %lf", (node_->now() - t2).seconds());
+    RCLCPP_INFO(node_->get_logger(), "[frontier_diag] stage=cost_matrix done elapsed_ms=%.1f",
+                std::chrono::duration<double, std::milli>(SteadyClock::now() - stage_start).count());
     return ed_->frontiers_.size();
 }
 

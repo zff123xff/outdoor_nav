@@ -4,6 +4,8 @@ from pathlib import Path
 import tempfile
 import yaml
 
+DEFAULT_TARGETS_FILE = '/home/nhy/outdoor_nav_1105/src/yolo_detector/config/detection_targets.yaml'
+
 
 def validate_targets(values):
     if not isinstance(values, (list, tuple)) or any(not isinstance(v, str) or not v.strip() for v in values):
@@ -14,8 +16,7 @@ def validate_targets(values):
 def targets_path(namespace, configured=''):
     if configured:
         return Path(configured).expanduser()
-    ns = namespace.strip('/').replace('/', '_') or 'default'
-    return Path('/tmp/outdoor_nav')/ns/'detection_targets.yaml'
+    return Path(DEFAULT_TARGETS_FILE)
 
 
 def write_targets(path, values, task_id=''):
@@ -45,4 +46,4 @@ def read_targets(path):
 
 def matches(targets, class_name, class_id=None):
     allowed = {v.casefold() for v in targets}
-    return not allowed or class_name.casefold() in allowed or str(class_id) in allowed
+    return class_name.casefold() in allowed or str(class_id) in allowed

@@ -49,6 +49,7 @@
 #include "map_msgs/msg/occupancy_grid_update.hpp"
 #include "nav2_msgs/msg/costmap.hpp"
 #include "nav2_msgs/srv/get_costmap.hpp"
+#include "tf2_ros/buffer.h"
 #include "tf2/transform_datatypes.h"
 #include "nav2_util/lifecycle_node.hpp"
 #include "tf2/LinearMath/Quaternion.h"
@@ -71,7 +72,10 @@ public:
     Costmap2D * costmap,
     std::string global_frame,
     std::string topic_name,
-    bool always_send_full_costmap = false);
+    bool always_send_full_costmap,
+    const std::shared_ptr<tf2_ros::Buffer> & tf_buffer,
+    std::string visualization_ground_reference_frame,
+    double visualization_ground_offset_z);
 
   /**
    * @brief  Destructor
@@ -135,6 +139,7 @@ private:
   /** @brief Prepare grid_ message for publication. */
   void prepareGrid();
   void prepareCostmap();
+  double visualizationGroundZ();
 
   /** @brief Publish the latest full costmap to the new subscriber. */
   // void onNewSubscription(const ros::SingleSubscriberPublisher& pub);
@@ -151,6 +156,10 @@ private:
   Costmap2D * costmap_;
   std::string global_frame_;
   std::string topic_name_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::string visualization_ground_reference_frame_;
+  double visualization_ground_offset_z_{0.0};
+  double visualization_ground_z_{0.0};
   unsigned int x0_, xn_, y0_, yn_;
   double saved_origin_x_;
   double saved_origin_y_;

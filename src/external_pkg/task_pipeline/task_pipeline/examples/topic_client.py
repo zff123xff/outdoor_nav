@@ -25,9 +25,8 @@ def resolve_navigation_origin(robot_namespace, timeout, ros_args=None):
 
     try:
         if not client.wait_for_service(timeout_sec=timeout):
-            raise RuntimeError(
-                f'无法连接 {target} 参数服务；请先启动导航栈'
-            )
+            from task_pipeline.diagnostics import origin_service_error
+            raise RuntimeError(origin_service_error(node, target))
 
         future = client.call_async(
             GetParameters.Request(
@@ -78,7 +77,7 @@ def submit(task, namespace, timeout, check=False, cancel=False, ros_args=None):
     terminal = {}
     def feedback(message):
         data = json.loads(message.data)
-        if data.get('task_id') != task['task_id']:
+        if str(data.get('task_id')) != str(task['task_id']):
             return
         print(json.dumps(data, ensure_ascii=False), flush=True)
         if data.get('event') in ('completed', 'failed', 'rejected'):
@@ -88,7 +87,12 @@ def submit(task, namespace, timeout, check=False, cancel=False, ros_args=None):
         deadline = time.monotonic()+timeout
         while not pub.get_subscription_count() or (not cancel and not node.count_publishers(f'/{namespace}/task_feedback')):
             if time.monotonic() > deadline:
-                print('Task topic subscriber unavailable')
+                print(
+                    f'Task pipeline unavailable: /{namespace}/task subscribers='
+                    f'{pub.get_subscription_count()}, /{namespace}/task_feedback publishers='
+                    f'{node.count_publishers(f"/{namespace}/task_feedback")}. '
+                    f'Check /{namespace}/pipeline_dispatcher startup logs, robot namespace, '
+                    'ROS_DOMAIN_ID and DDS configuration; no task was published.')
                 return 2
             rclpy.spin_once(node, timeout_sec=.1)
         if check:

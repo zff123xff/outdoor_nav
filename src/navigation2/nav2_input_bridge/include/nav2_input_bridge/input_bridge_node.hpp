@@ -109,6 +109,7 @@ private:
   rclcpp_action::Client<FollowPath>::SharedPtr follow_path_action_client_;
 
   std::mutex origin_mutex_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr origin_parameters_callback_;
   bool origin_valid_{false};
   double origin_lat_{0.0};
   double origin_lon_{0.0};

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from task_pipeline.examples import topic_client
+from task_pipeline.task_schema import TASK_IDS
 from task_pipeline.examples.sender import send_area_search, send_patrol, send_point_goal, send_multi_point
 
 
@@ -26,10 +27,10 @@ def test_direct_pipeline_submission(monkeypatch, sender, filename, capability):
     task, namespace, timeout, check, cancel, ros_args = calls[0]
     assert namespace == 'robot_2'
     assert task['task_id']
-    assert task['task_type'] == capability
+    assert task['task_id'] == TASK_IDS[capability]
     assert not check
     if capability == 'point_goal':
-        assert 'latitude' in task['waypoints'][0]
+        assert isinstance(task['waypoints'][0], float)
 
 
 @pytest.mark.parametrize('sender,filename,capability', SENDERS)
@@ -80,4 +81,4 @@ def test_explicit_file_overrides_coordinate_selection(monkeypatch):
     monkeypatch.setattr(topic_client, 'submit', lambda *args: calls.append(args) or 0)
     assert send_point_goal(['--coordinate-frame', 'enu', '--file',
                             str(CONFIG/'examples/gps/point_goal.yaml')]) == 0
-    assert calls[0][0]['task_type'] == 'point_goal'
+    assert calls[0][0]['task_id'] == '140'

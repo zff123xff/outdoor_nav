@@ -805,6 +805,43 @@ TEST_F(TransformGlobalPlanTest, nearby_carrot_does_not_trigger_final_goal_rotati
   ctrl_->cleanup();
 }
 
+TEST_F(TransformGlobalPlanTest, large_height_gap_does_not_shift_plan_sideways)
+{
+  configure_costmap(100u, 0.1);
+  configure_controller(10.0);
+
+  const auto stamp = node_->get_clock()->now();
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = PATH_FRAME;
+  transform.header.stamp = stamp;
+  transform.child_frame_id = ROBOT_FRAME;
+  transform.transform.translation.z = -60.0;
+  transform.transform.rotation.x = std::sin(0.13 / 2.0);
+  transform.transform.rotation.w = std::cos(0.13 / 2.0);
+  tf_buffer_->setTransform(transform, "test", true);
+  tf_buffer_->setUsingDedicatedThread(true);
+
+  nav_msgs::msg::Path path;
+  path.header.frame_id = PATH_FRAME;
+  path.header.stamp = stamp;
+  for (int i = 0; i <= 20; ++i) {
+    geometry_msgs::msg::PoseStamped point;
+    point.header = path.header;
+    point.pose.position.x = i * 0.1;
+    point.pose.orientation.w = 1.0;
+    path.poses.push_back(point);
+  }
+  ctrl_->setPlan(path);
+  geometry_msgs::msg::PoseStamped robot;
+  robot.header = path.header;
+  robot.pose.position.z = -60.0;
+  robot.pose.orientation = transform.transform.rotation;
+  auto transformed = ctrl_->transformGlobalPlanWrapper(robot);
+  ASSERT_GT(transformed.poses.size(), 1u);
+  EXPECT_NEAR(transformed.poses.front().pose.position.y, 0.0, 0.1);
+  EXPECT_GT(transformed.poses.back().pose.position.x, 1.0);
+}
+
 // This tests that not only should nothing get pruned on a costmap
 // that contains the entire global_plan, and also that it doesn't skip to the end of the path
 // which is closer to the robot pose than the start.

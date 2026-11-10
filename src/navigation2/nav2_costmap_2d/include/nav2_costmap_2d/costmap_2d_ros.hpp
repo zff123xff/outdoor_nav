@@ -372,6 +372,8 @@ protected:
    */
   void getParameters();
   bool always_send_full_costmap_{false};
+  std::string visualization_ground_reference_frame_;
+  double visualization_ground_offset_z_{0.0};
   std::string footprint_;
   float footprint_padding_{0};
   std::string global_frame_;       ///< The global frame for the costmap

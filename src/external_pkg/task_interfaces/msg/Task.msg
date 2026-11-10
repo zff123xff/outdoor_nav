@@ -1,12 +1,16 @@
-string POINT_GOAL=point_goal
-string MULTI_POINT=multi_point
-string PATROL_LINE=patrol_line
-string AREA_SEARCH=area_search
-string task_id
-string task_type
-# true: cancel the matching task_id; other task fields are ignored.
+# Public command. Fixed IDs: 140 point, 141 patrol, 142 area, 143 inspection, 145 multi-point.
+uint16 task_id
 bool cancel
-# Class names or numeric model class IDs; empty means all classes.
 string[] targets
-sensor_msgs/NavSatFix[] waypoints
-task_interfaces/SearchArea area
+# Repeated [latitude, longitude, altitude] GPS triplets (degrees, degrees, metres).
+float32[] waypoints
+# [latitude, longitude, altitude], required for area search only.
+float32[] center
+float64 length_m
+float64 width_m
+# ENU degrees counterclockwise from east.
+float64 yaw_deg
+# Reserved gait speed; currently does not affect task execution.
+int16 gait_speed
+# Reserved air route number; currently does not affect task execution.
+int16 air_route

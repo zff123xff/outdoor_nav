@@ -1,0 +1,20 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="接近、朝向与停稳检查"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="新鲜 map → base_link TF"];
+n1 [label="计算真实三维距离及高差"];
+n2 [label="目标附近停靠点：默认 9 m\n保留导航误差余量"];
+n3 [label="NavigateToPose 接近 / 等待终态"];
+n4 [label="等新 TF 后用 FollowTarget 朝向"];
+n5 [label="再等新 TF，验证实测范围与朝向"];
+n6 [label="用连续样本和单调时间验证停稳"];
+n7 [label="发布巡检观察事件"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+n5 -> n6 [label=""];
+n6 -> n7 [label=""];
+}

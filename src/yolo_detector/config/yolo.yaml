@@ -1,18 +1,61 @@
 /**:
   ros__parameters:
-    image_topic: front_camera/image_raw
-    detection_topic: yolo/detections
-    debug_image_topic: yolo/debug_image
-    expected_width: 640
-    expected_height: 480
-    expected_encoding: rgb8
-    strict_image_size: true
-    model_path: /home/nhy/models/best.engine
-    model_input_width: 640
-    model_input_height: 480
-    confidence_threshold: 0.4
-    iou_threshold: 0.45
-    max_detections: 100
-    publish_debug_image: false
-    # Empty resolves to /tmp/outdoor_nav/<namespace>/detection_targets.yaml.
-    targets_file: ""
+    # 所有话题均为相对名称，自动加上机器人命名空间，例如 /robot_1。
+    image_topic: front_camera/image_small       # 小图输入（YOLO 专用）
+    detection_topic: yolo/detections          # 二维检测框、类别与置信度输出
+    debug_image_topic: yolo/debug_image       # 绘制检测框后的调试图像输出
+    expected_width: 1920                      # 期望输入图像宽度，单位：像素
+    expected_height: 1080                     # 期望输入图像高度，单位：像素
+    expected_encoding: bgr8
+    input_width: 640                        # YOLO 实际订阅尺寸（小图）
+    input_height: 360
+    strict_image_size: true                  # 为 true 时拒绝与期望尺寸不同的图像
+    model_path: /home/nhy/yolo_env/models/yolo11n.engine  # 本机 TensorRT 模型文件
+    model_input_width: 640                   # 模型输入宽度，须为 32 的整数倍
+    model_input_height: 480                  # 模型输入高度，须为 32 的整数倍
+    confidence_threshold: 0.4                # 最低检测置信度，范围 0～1
+    iou_threshold: 0.45                      # 检测框重叠抑制阈值，范围 0～1
+    max_detections: 100                      # 单帧最多保留的检测框数量
+    publish_debug_image: true                # 是否发布带检测框的调试图像
+    # 142/143 与 YOLO 共用的目标类别文件；任务结束后保留，140/141 不修改。
+    # 文件中目标类别为空时暂停推理；每秒重新读取，无需重启。
+    targets_file: "/home/nhy/outdoor_nav_1105/src/yolo_detector/config/detection_targets.yaml"
+
+    # 三维定位：使用真实雷达点云与检测框关联；相机/雷达外参和地图变换仍从 TF 获取。
+    publish_target_markers: true             # 是否启用三维定位和 MarkerArray 输出
+    cloud_topic: livox/lidar                 # 雷达点云输入，类型 PointCloud2
+    marker_topic: targets/markers            # markers[i].pose.position 为目标地图坐标，单位：米
+    map_frame: map                          # 自动加命名空间，默认得到 robot_1/map
+    sensor_timeout_s: 1.5                    # 检测时间与当前 ROS 时间允许的最大差值，单位：秒
+    sync_tolerance_s: 0.15                   # 图像与累积窗口末帧允许的最大时间差，单位：秒
+    # 以最接近图像时间的雷达帧为末帧，向前累积此时长；0 表示只使用单帧。
+    # 每帧先按采集时刻 TF 转到 map，再按图像时刻 TF 投影；补偿机器人帧间运动。
+    # 不补偿目标自身运动；时长越大点云越密，移动目标拖影和计算量也越大。
+    cloud_accumulation_s: 1.0              # 点云累积窗口，单位：秒，范围 0～5；修改后重启 YOLO
+    min_lidar_points: 3                      # 累积点云在检测框内深度筛选后至少需要的有效激光点数
+    max_depth_spread_m: 0.5                  # 保留与中心候选点中位深度相差不超过此值的点，单位：米
+    track_distance_m: 1.0                   # 同类目标关联为同一 ID 的最大空间距离，单位：米
+
+    # 相机内参来源：yaml 直接读取下面参数，不订阅 CameraInfo；topic 保留原话题方式。
+    camera_info_source: yaml
+    # 默认视频输出与原始标定均为 1920×1080，此时无需缩放内参。
+    # 若将来对完整画面缩放，开启此项可按实际宽高分别缩放焦距和主点。
+    # 仅适用于整帧缩放；如图像还做了裁剪、填边或旋转，需要配置对应的新内参。
+    camera_scale_to_image: true
+    camera_info_topic: front_camera/camera_info  # 仅 camera_info_source=topic 时使用
+    # 保留已有 1920×1080 原始标定尺寸及内参；视频桥也输出 1920×1080。
+    # camera_width/height 是标定原始尺寸，不是 TensorRT 输入尺寸；修改后需重启 YOLO。
+    camera_width: 1920                       # 标定原始画面宽度，单位像素
+    camera_height: 1080                      # 标定原始画面高度，单位像素
+    camera_fx: 960.0                        # 水平方向焦距，单位：像素，必须大于 0
+    camera_fy: 960.0                        # 竖直方向焦距，单位：像素，必须大于 0
+    camera_cx: 960.0                        # 光轴主点横坐标，单位：像素
+    camera_cy: 540.0                        # 光轴主点纵坐标，单位：像素
+    camera_distortion_model: plumb_bob      # 支持 plumb_bob、rational_polynomial、equidistant
+    # plumb_bob 顺序：[k1,k2,p1,p2,k3]；equidistant 使用 4 个系数 [k1,k2,k3,k4]。
+    # rational_polynomial 使用 8 个系数 [k1,k2,p1,p2,k3,k4,k5,k6]。
+    # co-search 使用无畸变针孔模型，此处按相同模型填零；若原始图像有畸变，应填写实际系数。
+    camera_distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+    # 空字符串沿用输入图像 header.frame_id；显式填写时必须与图像光学坐标系完全一致。
+    # 光学坐标轴：X 向右、Y 向下、Z 向前。此处是坐标系名称，不是相机外参。
+    camera_optical_frame: ""

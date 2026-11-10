@@ -8,24 +8,28 @@ lidar_mount:
     xyz: [0.18, 0.0, 0.53]
     rpy: [0.0, 0.3141592653589793, 0.0]
 
+# 相机相对机身的安装外参，由 robot_launch 发布到 /tf_static；真机/仿真入口共用。
+# 相机水平朝前；开启后发布下方安装位置与光学坐标轴转换。
+# 仿真端、URDF 或其他节点已发布同一相机 TF 时，请保持 false，避免重复发布。
+camera_mount:
+  ros__parameters:
+    enabled: true
+    parent_frame: base_link                 # 父坐标系；自动加机器人命名空间
+    child_frame: front_camera_optical_frame # 相机光学坐标系；须与图像 header.frame_id 一致
+    # 相机光心在父坐标系中的位置，单位米：[前方 X、左方 Y、上方 Z]。
+    # [0,0,0] 是待替换的占位值，不代表真实安装位置。
+    xyz: [0.4, 0.0, 0.18]
+    # 相机光学坐标系相对父坐标系的旋转：[roll,pitch,yaw]，单位弧度。
+    # TF 旋转约定 R = Rz(yaw)*Ry(pitch)*Rx(roll)。光学坐标：X 右、Y 下、Z 前。
+    # 下列旋转仅表示相机水平朝前；已包含机身坐标轴到光学坐标轴的变换。
+    # 有实际俯仰/侧转时需填写对应光学外参，不能再重复叠加一次光学轴变换。
+    rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]
+
 base_to_livox_tf:
   ros__parameters:
 
 base_to_odom_tf:
   ros__parameters:
-
-ground_tilt_filter:
-  ros__parameters:
-    global_frame: map
-    robot_base_frame: base_link
-    height_reference_frame: ground_height_reference
-    time_constant_s: 0.3
-    estimate_ground_plane: true
-    cloud_topic: livox/lidar
-    ground_max_offset_m: 0.35
-    ground_max_tilt_deg: 20.0
-    ground_fit_residual_m: 0.035
-    reset_gap_s: 1.0
 
 controller_server:
   ros__parameters:
@@ -37,11 +41,12 @@ controller_server:
     failure_tolerance: 5.0
     progress_checker_plugin: "progress_checker"
     current_goal_checker: "general_goal_checker"
-    goal_checker_plugins: ["general_goal_checker", "area_entry_goal_checker"]
-    controller_plugins: ["FollowPath"]
+    goal_checker_plugins: ["general_goal_checker", "area_entry_goal_checker", "target_goal_checker"]
+    controller_plugins: ["FollowPath", "FollowTarget"]
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.1
+      required_movement_angle: 0.2  # radians; endpoint turns also count as progress
       movement_time_allowance: 15.0
     general_goal_checker:
       stateful: True
@@ -51,7 +56,20 @@ controller_server:
       plugin: "nav2_controller::PositionGoalChecker"
       xy_goal_tolerance: 0.10
       stateful: True
-    FollowPath:
+    target_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.15
+      stateful: True
+    FollowPath: &path_controller
+      w_traversal_cost: 5.0  # Theta*: larger values favour lower-cost clearance corridors
+      w_euc_cost: 1.0  # Theta*: larger values favour shorter paths
+      enable_path_hysteresis: true
+      switch_only_on_obstacle: true
+      # Weighted metres; scale changes with w_euc_cost and w_traversal_cost.
+      switch_penalty: 5000.0
+      min_switch_interval: 5.0  # steady-clock seconds; invalid retained paths bypass this
+      log_path_switch: true  # throttled final-selection diagnostics
       prefer_supplied_path: true  # retain collision-free optimized task paths; Theta* repairs blocked paths
       local_path_smoothing_iterations: 2  # smooth Theta* repairs locally; 0 disables, max 5
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
@@ -60,7 +78,8 @@ controller_server:
       max_lookahead_dist: 1.2
       use_rotate_to_heading: true
       use_rotate_to_goal_heading: false  # all configured checkers require position only
-      tracking_angular_vel_limit: 0.5  # preserve curvature within the drive's yaw-rate limit
+      tracking_angular_vel_limit: 0.3  # preserve curvature within the drive's yaw-rate limit
+      inflation_cost_scaling_factor: 1.0  # match local_costmap inflation_layer.cost_scaling_factor
       use_backup_recovery: true
       backup_recovery_trigger_cost: 200.0  # raw costmap 0..255; not every inflated cell
       backup_recovery_distance: 0.5       # maximum reverse search distance, m
@@ -72,16 +91,19 @@ controller_server:
       rotate_to_heading_min_angle: 0.7853981633974483  # enter above 45 degrees
       rotate_to_heading_hysteresis: 0.2617993877991494  # exit at/below 30 degrees
       rotate_to_heading_direction_lock_angle: 0.17453292519943295  # +/-pi band: 10 degrees
-      desired_linear_vel: 1.0
+      desired_linear_vel: 1.5
       max_allowed_time_to_collision_up_to_carrot: 1.5
       min_linear_vel: 0.1
       max_linear_vel: 1.5
       max_angular_vel: 1.2
       min_angular_vel: 0.0
       acc_lim_linear: 1.0
-      acc_lim_angular: 1.5
+      acc_lim_angular: 0.2
       regulate_linear_vel: true
       allow_backward: false
+    FollowTarget:
+      <<: *path_controller
+      use_rotate_to_goal_heading: true
 
 controller_server_rclcpp_node:
   ros__parameters:
@@ -91,6 +113,7 @@ straight_planner:
     global_frame: map
     robot_base_frame: base_link
     path_step_m: 0.1
+    max_path_length_m: 10000.0  # 拒絕超過此長度的直線路徑，避免錯誤 GPS 原點生成巨量路徑點
     planning_period_s: 0.5
     controller_id: FollowPath
     goal_checker_id: general_goal_checker
@@ -105,43 +128,50 @@ local_costmap:
       publish_frequency: 5.0
       global_frame: map
       robot_base_frame: base_link
+      # RViz costmap plane follows ground below base_link; visualization only.
+      visualization_ground_reference_frame: base_link
+      # Nominal ground height in base_link, matching the obstacle height reference.
+      visualization_ground_offset_z: -0.3165
       # Allow up to 1s of TF staleness while PX4 EKF2 warms up; the static
       # `map -> odom` publisher comes up immediately but PX4's
       # `odom -> base_link` only starts broadcasting after EKF2 initialization
       # following the first heartbeat + sensor data.
       transform_tolerance: 1.0
       rolling_window: true
-      width: 20
-      height: 20
-      resolution: 0.05
+      width: 50
+      height: 50
+      resolution: 0.1
       footprint: "[ [0.40, 0.27], [0.40, -0.27], [-0.40, -0.27], [-0.40, 0.27] ]"
+      footprint_padding: 0.2
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         clear_before_update: true
+        min_points_per_cell: 5  # valid returns per XY cell within point_count_window_s
+        point_count_window_s: 3.0  # seconds; 0 counts each cloud independently
         observation_sources: pointcloud
         min_obstacle_height: -100.0
         max_obstacle_height: 100.0
         pointcloud:
           topic: /livox/lidar
-          obstacle_max_range: 20.0  # maximum obstacle marking distance, m
-          raytrace_max_range: 20.0  # maximum clearing ray distance, m
-          # Height normal to the IMU-fused body XY plane; preserve tuned limits.
-          height_reference_frame: ground_height_reference
-          height_reference_ground_z: 0.0  # ground plane Z in base_link; negative if base is above ground
+          obstacle_max_range: 40.0  # maximum obstacle marking distance, m
+          raytrace_max_range: 40.0  # maximum clearing ray distance, m
+          # Fixed body-relative height filter; no fitted ground-reference TF.
+          height_reference_frame: base_link
+          height_reference_ground_z: -0.31  # nominal ground Z in base_link
           # A vertical column is occupied if any non-ground return is in this band.
-          min_obstacle_height: 0.2
-          max_obstacle_height: 0.6
+          min_obstacle_height: 0.8
+          max_obstacle_height: 3.0
           clearing: true
           marking: true
           inf_is_valid: true
           data_type: "PointCloud2"
-          observation_keep_time: 0.0
+          observation_persistence: 3.0  # seconds; expire old pointcloud observations
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 8.0
-        inflation_radius: 0.8
+        cost_scaling_factor: 1.0  # slower decay keeps meaningful costs farther from obstacles
+        inflation_radius: 2.0  # metres; ROS double parameter requires a decimal point
       always_send_full_costmap: true
   local_costmap_client:
     ros__parameters:
@@ -164,10 +194,17 @@ nav2_input_bridge:
     # before the node reports that the odom->base_link TF is gone.
     odom_timeout_s: 2.0
     odom_watchdog_period_s: 1.0
+
+  #三界
+    reference_latitude: 32.511426
+    reference_longitude: 118.104505
+    reference_altitude: 262.929
+
+
 #乌兰察布
-    reference_latitude: 40.9445353
-    reference_longitude: 113.172819
-    reference_altitude: 1298.7345711102703
+    # reference_latitude: 40.9445353
+    # reference_longitude: 113.172819
+    # reference_altitude: 1298.7345711102703
 
 # 无锡科技
 #    reference_latitude: 31.4878655

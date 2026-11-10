@@ -9,6 +9,7 @@ from robot_launch.bringup import mavros, nav2, pipeline
 import os
 
 import yaml
+from yolo_detector.targets import DEFAULT_TARGETS_FILE
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, GroupAction
@@ -152,6 +153,8 @@ def generate_launch_description():
             "address": LaunchConfiguration("address"),
             "mqtt_username": LaunchConfiguration("mqtt_username"),
             "mqtt_passwd": LaunchConfiguration("mqtt_passwd"),
+            "yolo_targets_file": LaunchConfiguration("yolo_targets_file"),
+            "inspection_search_mode": LaunchConfiguration("inspection_search_mode"),
         }.items(),
     )
 
@@ -232,6 +235,9 @@ def generate_launch_description():
             declare_address,
             declare_mqtt_username,
             declare_mqtt_passwd,
+            DeclareLaunchArgument("yolo_targets_file", default_value=DEFAULT_TARGETS_FILE),
+            DeclareLaunchArgument("inspection_search_mode", default_value="false",
+                                  description="143 simulation observation: search, pause, visit and resume"),
             go2w_driver_launch,
             mavros_launch,
             odom_relay_launch,

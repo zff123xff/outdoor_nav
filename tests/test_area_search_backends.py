@@ -36,8 +36,8 @@ def test_area_sender_uses_gps_topic_schema():
     ns, task = load_example(ROOT/'src/external_pkg/task_pipeline/config/examples/enu/area_search.yaml',
         'area_search', 'test_robot', (40., 113., 1200.))
     assert ns == 'test_robot'
-    assert task['task_type'] == 'area_search'
-    assert task['area']['center']['latitude'] > 39.
+    assert task['task_id'] == '142'
+    assert task['center'][0] > 39.
 
 
 def test_legacy_executable_and_modules_are_removed():
@@ -45,3 +45,15 @@ def test_legacy_executable_and_modules_are_removed():
     assert 'task_pipeline.area_search:main' not in (package/'setup.py').read_text()
     for name in ('area_search.py', 'area_search_core.py', 'path_refinement.py'):
         assert not (package/'task_pipeline'/name).exists()
+
+
+def test_detector_targets_file_is_forwarded_to_dispatcher():
+    context = LaunchContext()
+    context.launch_configurations.update(yolo_targets_file='/tmp/custom_classes.yaml',
+                                        robot_namespace='robot_2', use_sim_time='false')
+    with patch.object(pipeline, 'Node') as create:
+        pipeline.generate_launch_description()
+    dispatcher = next(call.kwargs for call in create.call_args_list
+                      if call.kwargs.get('executable') == 'pipeline_dispatcher')
+    value = dispatcher['parameters'][0]['yolo_targets_file']
+    assert value.evaluate(context) == '/tmp/custom_classes.yaml'

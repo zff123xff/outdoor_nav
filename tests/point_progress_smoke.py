@@ -69,11 +69,15 @@ def main():
         wait(lambda: task_pub.get_subscription_count() and point._robot_xy() is not None and
              point._navigation.client.server_is_ready(), 'readiness')
         latitude, longitude, altitude = enu_to_gps(10., 0., 0., (31., 120., 0.))
-        task_pub.publish(to_message(dict(task_id='no_gps', task_type='point_goal', waypoints=[
-            dict(latitude=latitude, longitude=longitude, altitude=altitude)])))
+        task_pub.publish(to_message(dict(task_id='140', waypoints=[latitude, longitude, altitude])))
         wait(lambda: goals, 'ENU navigation goal')
-        assert abs(goals[0].pose.pose.position.x-10.) < .01
-        state['x'] = 5.
+        assert abs(goals[0].pose.pose.position.x-10.) < .5
+        state['x'] = -10.
+        wait(lambda: point._robot_xy()[0] < -9., 'move away from target')
+        received = len(statuses)
+        wait(lambda: len(statuses) > received, 'status while moving away')
+        assert statuses[-1].progress == 0
+        state['x'] = goals[0].pose.pose.position.x/2.
         wait(lambda: any(49 <= status.progress <= 50 for status in statuses), '50% ENU status')
         assert pipeline.fix is None
         saved = pipeline.progress
@@ -83,7 +87,7 @@ def main():
         release.set_result(True)
         wait(lambda: any(status.progress == 100 for status in statuses), 'terminal 100')
         wait(lambda: any(event['event'] == 'failed' for event in events), 'failed result')
-        print('PASS: no GPS; ENU goal 10m, odom/TF at 5m -> 50%; stale ENU ignored; failed Action -> 100%')
+        print('PASS: no GPS; ENU goal 10m, at -10m -> 0%, at 5m -> 50%; stale ENU ignored; failed Action -> 100%')
     finally:
         server.destroy()
         for node in (pipeline, point, fixture):

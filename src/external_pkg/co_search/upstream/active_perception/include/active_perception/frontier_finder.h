@@ -146,7 +146,7 @@ private:
     double candidate_rmax_, candidate_rmin_, candidate_dphi_, min_candidate_dist_, min_candidate_clearance_;
     int    down_sample_;
     double min_view_finish_fraction_, resolution_;
-    int    min_visib_num_, candidate_rnum_;
+    int    min_visib_num_, candidate_rnum_, max_candidate_samples_;
     double revalidate_half_extent_xy_, revalidate_half_extent_z_;
 
     // 历史轨迹抑制参数

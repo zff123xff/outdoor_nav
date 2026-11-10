@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""对外接口检查：下发 point_goal，观察 /<ns>/robot_task_status 进度 0 -> 100，20 s 内结束。
+"""对外接口检查：下发 point_goal，观察 /<ns>/robot_task_status 进度 1 -> 100，20 s 内结束。
 
 只使用公开接口：发布 task_interfaces/Task，订阅 task_interfaces/TaskStatus 与 task_feedback。
 PointGoal Action server 是本文件内的假实现，只上报递增的 progress，不产生任何机器人运动。
@@ -22,7 +22,7 @@ from task_interfaces.msg import Task, TaskStatus
 from task_pipeline.dispatcher import PipelineDispatcher
 from task_pipeline.task_schema import to_message
 
-TASK_ID = 'point_status_demo'
+TASK_ID = 140
 DURATION_S = 20.0          # 模拟一次定点导航的总时长
 FEEDBACK_PERIOD_S = 0.5    # 假执行器上报进度周期
 STATUS_PERIOD_S = 1.0      # dispatcher 的 TaskStatus 周期
@@ -96,19 +96,19 @@ def main():
              dispatcher.action_clients['point_goal'].server_is_ready(), 'readiness')
         clock['start'] = time.monotonic()
         task_pub.publish(to_message(dict(
-            task_id=TASK_ID, task_type='point_goal',
-            waypoints=[dict(latitude=31.0, longitude=120.0, altitude=0.0)])))
+            task_id=TASK_ID, waypoints=[31.0, 120.0, 0.0])))
         wait(lambda: goals and any(m.progress == 100 for _, m in statuses), 'terminal 100')
         elapsed = time.monotonic() - clock['start']
-        wait(lambda: any(e['event'] in ('completed', 'failed') and e['task_id'] == TASK_ID
+        wait(lambda: any(e['event'] in ('completed', 'failed') and e['task_id'] == str(TASK_ID)
                          for e in events), 'terminal event')
 
-        own = [m for _, m in statuses if m.task_id == TASK_ID]
+        own = [m for _, m in statuses if m.task_id == str(TASK_ID)]
         progress = [m.progress for m in own]
-        stamps = [stamp for stamp, m in statuses if m.task_id == TASK_ID and m.progress < 100]
+        stamps = [stamp for stamp, m in statuses if m.task_id == str(TASK_ID) and m.progress < 100]
         assert goals[0].target.latitude == 31.0 and goals[0].target.longitude == 120.0, goals[0]
         assert own, 'no TaskStatus for this task'
-        assert progress[0] <= 5, f'progress must start near 0, got {progress}'
+        assert 1 <= progress[0] <= 5, f'progress must start near 1, got {progress}'
+        assert all(p >= 1 for p in progress), progress
         assert progress == sorted(progress), f'progress must be monotonic, got {progress}'
         assert progress[-1] == 100, f'terminal progress must be 100, got {progress}'
         assert elapsed <= DURATION_S + TIMEOUT_TOLERANCE_S, f'finished in {elapsed:.2f}s > {DURATION_S}s budget'
@@ -118,9 +118,9 @@ def main():
         assert all(STATUS_PERIOD_S - 0.35 <= b - a <= STATUS_PERIOD_S + 0.35
                    for a, b in zip(stamps, stamps[1:])), [round(b - a, 3) for a, b in zip(stamps, stamps[1:])]
         assert all(m.failures == 0 and m.param1 == m.param2 == m.param3 == 0.0 for m in own)
-        kinds = [e['event'] for e in events if e['task_id'] == TASK_ID]
-        assert 'queued' in kinds and 'executing' in kinds and 'completed' in kinds, kinds
-        assert dispatcher.current is None and not dispatcher.queue
+        kinds = [e['event'] for e in events if e['task_id'] == str(TASK_ID)]
+        assert 'accepted' in kinds and 'executing' in kinds and 'completed' in kinds, kinds
+        assert dispatcher.current is None
 
         print('progress:', ' '.join(str(p) for p in progress))
         print(f'PASS: point_goal -> robot_task_status {progress[0]}..{progress[-1]}, '

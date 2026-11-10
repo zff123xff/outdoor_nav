@@ -7,17 +7,17 @@ import sys
 
 import yaml
 from .coordinates import enu_to_gps
-from task_pipeline.task_schema import validate
+from task_pipeline.task_schema import validate, TASK_IDS
 
 
 def load_example(path, kind, namespace=None, origin=None):
     data = yaml.safe_load(Path(path).read_text())
     ns = str(namespace or data.get('robot_namespace', 'robot_1')).strip('/')
     task = data.get('task', data)
-    if 'task_type' in task:
+    if 'params' not in task and 'task_id' in task:
         return ns, validate(task)
     params = task.get('params', task)
-    task_id = str(task.get('task_id', task.get('mission_id', kind+'_demo')))
+    task_id = TASK_IDS[kind]
     points = []
     frame = data.get('coordinate_frame', data.get('coordinate_mode', 'gps'))
     def convert(point):
@@ -32,12 +32,17 @@ def load_example(path, kind, namespace=None, origin=None):
             alt = point.get('altitude', point.get('alt', 0.))
         return dict(latitude=lat, longitude=lon, altitude=alt)
     area = {}
-    if kind == 'area_search':
+    if kind == 'area_search' or (kind == 'target_inspection' and 'rectangle' in params):
         area = dict(center=convert(params['center_enu' if frame == 'enu' else 'center_gps']),
                     **params['rectangle'])
     else:
         points = [convert(p.get(frame, p)) for p in params.get('waypoints', [])]
-    return ns, validate(dict(task_id=task_id, task_type=kind, waypoints=points, area=area, targets=task.get('targets', data.get('targets', []))))
+    flat = lambda p: [p['latitude'], p['longitude'], p['altitude']]
+    wire = dict(task_id=task_id, waypoints=[v for p in points for v in flat(p)],
+                targets=task.get('targets', data.get('targets', [])))
+    if area:
+        wire.update(center=flat(area.pop('center')), **area)
+    return ns, validate(wire)
 
 
 def main_for(kind, default_frame, argv=None):
@@ -46,7 +51,7 @@ def main_for(kind, default_frame, argv=None):
     parser.add_argument('file', nargs='?', type=Path)
     parser.add_argument('--file', dest='task_file', type=Path)
     parser.add_argument('--coordinate-frame', choices=('enu', 'gps'), default=default_frame,
-                        help='Select config/examples/<enu|gps>/<task_type>.yaml; --file overrides this selection')
+                        help='Select config/examples/<enu|gps>/<primitive>.yaml; --file overrides this selection')
     parser.add_argument('--namespace')
     parser.add_argument('--wait-timeout', type=float, default=10.)
     parser.add_argument('--dry-run', action='store_true')
@@ -67,7 +72,7 @@ def main_for(kind, default_frame, argv=None):
             origin = resolve_navigation_origin(ns, args.wait_timeout, ros_args)
         if args.check or args.cancel:
             task = raw.get('task', raw)
-            task = dict(task_id=task.get('task_id', task.get('mission_id', kind+'_demo')), cancel=args.cancel)
+            task = dict(task_id=TASK_IDS[kind], cancel=args.cancel)
         else:
             ns, task = load_example(path, kind, args.namespace, origin)
         if args.dry_run:
@@ -94,3 +99,7 @@ def send_patrol(argv=None):
 
 def send_area_search(argv=None):
     return main_for('area_search', 'enu', argv)
+
+
+def send_target_inspection(argv=None):
+    return main_for('target_inspection', 'gps', argv)

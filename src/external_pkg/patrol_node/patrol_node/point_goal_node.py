@@ -220,7 +220,8 @@ class PointGoalNode(Node):
             self._progress_total_m = math.dist(xy, self._target_enu[:2])
         if self._progress_total_m <= 1e-6:
             return 0.0
-        return min(99.0, 100.0 * math.dist(self._progress_start_xy, xy) / self._progress_total_m)
+        remaining = math.dist(xy, self._target_enu[:2])
+        return min(99.0, max(0.0, 100.0 * (1.0 - remaining / self._progress_total_m)))
 
     def _publish_feedback(self, distance, phase, reached, force=False):
         if self._goal_handle is None:
