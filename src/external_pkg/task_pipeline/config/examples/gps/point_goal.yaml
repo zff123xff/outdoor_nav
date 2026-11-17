@@ -1,0 +1,8 @@
+robot_namespace: robot_1
+task:
+  task_id: 140
+  waypoints:
+  - 40.9446353
+  - 113.172819
+  - 1298.7345711102703
+  targets: []

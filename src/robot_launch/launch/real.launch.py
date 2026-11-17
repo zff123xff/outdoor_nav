@@ -9,6 +9,7 @@ from robot_launch.bringup import mavros, nav2, pipeline
 import os
 
 import yaml
+from yolo_detector.targets import DEFAULT_TARGETS_FILE
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, GroupAction
@@ -37,7 +38,7 @@ def generate_launch_description():
 
     declare_robot_namespace = DeclareLaunchArgument(
         "robot_namespace",
-        default_value="robot",
+        default_value="robot_1",
         description="Per-robot namespace (e.g. robot_a, robot_b). All topics, "
                     "TFs, action servers and lifecycle nodes live under this.",
     )
@@ -80,13 +81,8 @@ def generate_launch_description():
         description="Enable MQTT task input together with the task pipeline.",
     )
     declare_address = DeclareLaunchArgument("address", default_value="tcp://127.0.0.1:1883")
-    declare_mqtt_username = DeclareLaunchArgument("mqtt_username", default_value="admin")
-    declare_mqtt_passwd = DeclareLaunchArgument("mqtt_passwd", default_value="nanhu@2020")
-    declare_usv_sn = DeclareLaunchArgument("usv_sn", default_value=LaunchConfiguration("robot_namespace"))
-    declare_prefix = DeclareLaunchArgument("prefix", default_value="")
-    declare_vehicle_id = DeclareLaunchArgument("vehicle_id", default_value="1")
-    declare_drone_name = DeclareLaunchArgument("drone_name", default_value=LaunchConfiguration("robot_namespace"))
-    declare_drone_id = DeclareLaunchArgument("drone_id", default_value="1")
+    declare_mqtt_username = DeclareLaunchArgument("mqtt_username", default_value="")
+    declare_mqtt_passwd = DeclareLaunchArgument("mqtt_passwd", default_value="")
 
     ns = LaunchConfiguration("robot_namespace")
     fcu_url = LaunchConfiguration("fcu_url")
@@ -157,11 +153,8 @@ def generate_launch_description():
             "address": LaunchConfiguration("address"),
             "mqtt_username": LaunchConfiguration("mqtt_username"),
             "mqtt_passwd": LaunchConfiguration("mqtt_passwd"),
-            "usv_sn": LaunchConfiguration("usv_sn"),
-            "prefix": LaunchConfiguration("prefix"),
-            "vehicle_id": LaunchConfiguration("vehicle_id"),
-            "drone_name": LaunchConfiguration("drone_name"),
-            "drone_id": LaunchConfiguration("drone_id"),
+            "yolo_targets_file": LaunchConfiguration("yolo_targets_file"),
+            "inspection_search_mode": LaunchConfiguration("inspection_search_mode"),
         }.items(),
     )
 
@@ -242,11 +235,9 @@ def generate_launch_description():
             declare_address,
             declare_mqtt_username,
             declare_mqtt_passwd,
-            declare_usv_sn,
-            declare_prefix,
-            declare_vehicle_id,
-            declare_drone_name,
-            declare_drone_id,
+            DeclareLaunchArgument("yolo_targets_file", default_value=DEFAULT_TARGETS_FILE),
+            DeclareLaunchArgument("inspection_search_mode", default_value="false",
+                                  description="143 simulation observation: search, pause, visit and resume"),
             go2w_driver_launch,
             mavros_launch,
             odom_relay_launch,

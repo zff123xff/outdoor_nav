@@ -1,0 +1,10 @@
+string task_id
+---
+bool success
+string message
+uint32 inspected_count
+uint32 failed_count
+---
+float64 progress
+string phase
+uint64 target_id

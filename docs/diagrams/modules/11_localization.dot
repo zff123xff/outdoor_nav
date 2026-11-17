@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="定位与环境信息"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="UE 传感器 → 原 ue_to_ros_bridge"];
+n1 [label="mavros/odom / 点云"];
+n2 [label="nav2_input_bridge 发布机器人 TF"];
+n3 [label="odom_relay 转发 QoS / 仿真 GPS\n参考原点来自导航 YAML"];
+n4 [label="导航栈与巡检读取定位"];
+n5 [label="TF 新鲜性按本机接收进度\n停更时禁止发布到达事件"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

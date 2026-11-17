@@ -16,7 +16,6 @@
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>msg_set_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>tf2_ros</depend>
   <!-- lla_to_enu is shared with multi_goal_to_gp_goal so the ENU frame of

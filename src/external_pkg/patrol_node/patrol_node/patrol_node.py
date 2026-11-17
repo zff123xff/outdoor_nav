@@ -21,9 +21,10 @@ import time
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
-from multi_goal_to_gp_goal.multi_goal_to_gp_goal import lla_to_enu
+from multi_goal_to_gp_goal.coordinates import lla_to_enu
 from nav_msgs.msg import Odometry
 from patrol_node.action import Patrol
+from patrol_node.live_tf_buffer import LiveRobotTransformBuffer
 from patrol_node.waypoints import GeoPoint, PingPongQueue, nearest_endpoint
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.executors import ExternalShutdownException
@@ -33,7 +34,7 @@ from rclpy.task import Future
 from rclpy.time import Time
 from action_msgs.msg import GoalStatus
 from multi_goal_to_gp_goal.navigation_client import NavigationClient
-from tf2_ros import Buffer, TransformException, TransformListener
+from tf2_ros import TransformException, TransformListener
 
 
 class PatrolNode(Node):
@@ -72,7 +73,7 @@ class PatrolNode(Node):
             self.get_parameter('global_frame').value, namespace)
         self._robot_base_frame = self._resolve_frame(
             self.get_parameter('robot_base_frame').value, namespace)
-        self._tf_buffer = Buffer()
+        self._tf_buffer = LiveRobotTransformBuffer(self._global_frame, self._robot_base_frame)
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._last_odom_received_monotonic = None
         self._last_tf_warning_monotonic = 0.0
@@ -136,7 +137,7 @@ class PatrolNode(Node):
 
         if self._robot_position_in_global_frame() is None:
             self.get_logger().error(
-                'Fresh odometry and map -> base_link TF are required '
+                'Fresh map -> base_link TF is required '
                 'to select the nearest patrol endpoint.')
             return GoalResponse.REJECT
 
@@ -276,28 +277,42 @@ class PatrolNode(Node):
 
     def _robot_position_in_global_frame(self):
         """Return fresh robot XY in the same map frame as projected GPS goals."""
-        if (self._last_odom_received_monotonic is None or
-                time.monotonic() - self._last_odom_received_monotonic > 2.0):
-            return None
+        # TF already supplies the map-frame position and its timestamp. The
+        # odom subscription only supplies the final-pose report; requiring a
+        # separate receipt here rejects valid localization when that relay
+        # topic is absent, even though Nav2 can navigate using this same TF.
         try:
             transform = self._tf_buffer.lookup_transform(
                 self._global_frame, self._robot_base_frame, Time())
         except TransformException as exc:
-            now = time.monotonic()
-            if now - self._last_tf_warning_monotonic >= 3.0:
-                self.get_logger().warning(
-                    f'Waiting for robot TF {self._global_frame} -> '
-                    f'{self._robot_base_frame}: {exc}')
-                self._last_tf_warning_monotonic = now
+            self._warn_localization(
+                f'Waiting for robot TF {self._global_frame} -> '
+                f'{self._robot_base_frame}: {exc}')
             return None
-        age = (self.get_clock().now() - Time.from_msg(transform.header.stamp)).nanoseconds * 1e-9
+        age = self._tf_buffer.robot_update_age()
         robot_xy = (transform.transform.translation.x, transform.transform.translation.y)
-        if age < -0.5 or age > 2.0 or not all(math.isfinite(value) for value in robot_xy):
+        if age is None or age > 2.0:
+            self._warn_localization(
+                f'Robot TF {self._global_frame} -> {self._robot_base_frame} '
+                f'has no recent timestamp advancement (update_age_s={age}, limit 2.0s). '
+                'Check dynamic TF publication.')
+            return None
+        if not all(math.isfinite(value) for value in robot_xy):
+            self._warn_localization(
+                f'Robot TF {self._global_frame} -> {self._robot_base_frame} '
+                f'has non-finite position: {robot_xy}')
             return None
         q = transform.transform.rotation
         self._latest_global_yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         return robot_xy
+
+    def _warn_localization(self, message):
+        """Explain localization failures without flooding feedback logs."""
+        now = time.monotonic()
+        if now - self._last_tf_warning_monotonic >= 3.0:
+            self.get_logger().warning(message)
+            self._last_tf_warning_monotonic = now
 
     def _distance_between(self, point_a: GeoPoint, point_b: GeoPoint) -> float:
         """Horizontal distance between two GPS points, in the ENU frame."""

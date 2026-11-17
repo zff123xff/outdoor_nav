@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="141 两点巡线"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="两个 GPS 三元组"];
+n1 [label="转换 ENU / 获取新鲜机器人 TF"];
+n2 [label="选择最近端点并导航"];
+n3 [label="到另一端点"];
+n4 [label="返回起始端点：完成一轮"];
+n5 [label="三次端点到达 → 终态"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

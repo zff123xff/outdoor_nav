@@ -1,0 +1,424 @@
+// Native co-search algorithms; this node only adapts live ROS input and spline output.
+#include <exploration_manager/fast_exploration_manager.h>
+#include <exploration_manager/expl_data.h>
+#include <plan_manage/planner_manager.h>
+#include <plan_env/sdf_map.h>
+#include <active_perception/frontier_finder.h>
+#include <bspline/msg/bspline.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
+#include <nlohmann/json.hpp>
+#include <chrono>
+#include <cmath>
+#include <limits>
+#include <sstream>
+#include <algorithm>
+#include <vector>
+#include <deque>
+
+using namespace fast_planner;
+class SearchEngine {
+  rclcpp::Node::SharedPtr node_;
+  std::unique_ptr<FastExplorationManager> manager_;
+  std::shared_ptr<tf2_ros::Buffer> tf_;
+  std::shared_ptr<tf2_ros::TransformListener> listener_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr entry_failure_sub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<bspline::msg::Bspline>::SharedPtr spline_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  Eigen::Vector3d center_, position_{0,0,.3}, velocity_{0,0,0};
+  Eigen::Matrix3d rotation_;
+  std::string frame_, odom_frame_, last_cloud_error_, last_frame_error_;
+  bool cloud_x_filter_;
+  double cloud_min_x_, cloud_max_x_, cloud_voxel_size_, cloud_future_tolerance_;
+  double yaw_=0, odom_time_=0, cloud_time_=0, last_cloud_process_=0, timeout_, spacing_;
+  struct BufferedCloud {
+    pcl::PointCloud<pcl::PointXYZ> points;
+    Eigen::Vector3d origin;
+    double stamp;
+    bool integrated=false;
+  };
+  std::deque<BufferedCloud> cloud_buffer_;
+  double cloud_window_s_;
+  int cloud_min_points_;
+  size_t cloud_window_points_=0;
+  bool enabled_=false;
+  unsigned clouds_=0;
+  Eigen::Vector3d entry_target_{0,0,.3};
+  bool entry_active_=false, entry_failed_=false;
+  double entry_inset_, entry_spacing_, entry_clearance_, entry_cooldown_, entry_timeout_;
+  double entry_blocked_since_=-1.;
+  int entry_max_attempts_, entry_max_failures_, entry_execution_failures_=0;
+  std::vector<std::pair<Eigen::Vector3d,double>> rejected_entries_;
+  template<class T> T param(const std::string &name, const T &value) {
+    if (!node_->has_parameter(name)) node_->declare_parameter<T>(name,value);
+    return node_->get_parameter(name).get_value<T>();
+  }
+  Eigen::Isometry3d transform(const std::string &source, const builtin_interfaces::msg::Time &stamp) {
+    auto msg=tf_->lookupTransform(frame_,source,stamp,rclcpp::Duration::from_seconds(.1));
+    auto &q=msg.transform.rotation; auto &t=msg.transform.translation;
+    Eigen::Isometry3d out=Eigen::Isometry3d::Identity();
+    out.linear()=Eigen::Quaterniond(q.w,q.x,q.y,q.z).toRotationMatrix();
+    out.translation()<<t.x,t.y,t.z; return out;
+  }
+  size_t reachableFrontiers() const {
+    return std::count_if(manager_->ed_->points_.begin(), manager_->ed_->points_.end(),
+      [this](const Eigen::Vector3d &p) { return manager_->isReachableForAdapter(p); });
+  }
+  void state(const std::string &phase, const std::string &reason, int result=-1) {
+    std_msgs::msg::String msg;
+    msg.data=nlohmann::json{{"phase",phase},{"reason",reason},{"native_result",result},
+      {"clouds",clouds_},{"odom_stamp",odom_time_},{"cloud_stamp",cloud_time_},
+      {"cloud_window_frames",cloud_buffer_.size()},{"cloud_window_points",cloud_window_points_},
+      {"reachable_frontiers",reachableFrontiers()},{"frontier_clusters",manager_->ed_->points_.size()},
+      {"entry_target_map",entry_active_ ? nlohmann::json::array({worldPoint(entry_target_).x(),worldPoint(entry_target_).y()}) : nlohmann::json(nullptr)},
+      {"entry_execution_failures",entry_execution_failures_}}.dump();
+    state_pub_->publish(msg);
+  }
+  void odom(const nav_msgs::msg::Odometry &msg) {
+    try {
+      const auto &source=msg.header.frame_id.empty() ? odom_frame_ : msg.header.frame_id;
+      if(msg.header.frame_id.empty()) {
+        RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 10000,
+          "Odometry header.frame_id is empty; using configured adapter/odom_frame '%s'",
+          odom_frame_.c_str());
+      }
+      auto world=transform(source,msg.header.stamp);
+      auto &p=msg.pose.pose.position; auto &q=msg.pose.pose.orientation;
+      Eigen::Matrix3d orientation=world.linear()*Eigen::Quaterniond(q.w,q.x,q.y,q.z).toRotationMatrix();
+      position_=rotation_*(world*Eigen::Vector3d(p.x,p.y,p.z)-center_);
+      // Native co-search is a 2D ground-vehicle planner at its configured slice.
+      position_.z()=.3;
+      yaw_=std::atan2((rotation_*orientation)(1,0),(rotation_*orientation)(0,0));
+      auto &v=msg.twist.twist.linear;
+      velocity_=rotation_*orientation*Eigen::Vector3d(v.x,v.y,v.z); velocity_.z()=0;
+      odom_time_=rclcpp::Time(msg.header.stamp).seconds();
+      auto &self=manager_->ed_->swarm_state_.at(0);
+      self.pos_=position_; self.vel_=velocity_; self.yaw_=yaw_; self.stamp_=odom_time_;
+      if (!self.start_pos_valid_) { self.start_pos_=position_; self.start_pos_valid_=true; }
+    } catch(const std::exception &e) { state("waiting_odom",e.what()); }
+  }
+  void integrateCloudWindow(double now) {
+    cloud_buffer_.erase(std::remove_if(cloud_buffer_.begin(),cloud_buffer_.end(),
+      [&](const auto &frame){return now-frame.stamp>cloud_window_s_;}),cloud_buffer_.end());
+    // Bound memory even if a sensor publishes at an unexpected rate.
+    while(cloud_buffer_.size()>128)cloud_buffer_.pop_front();
+    if(now-last_cloud_process_<param<double>("adapter/map_period_s",.2))return;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr combined(new pcl::PointCloud<pcl::PointXYZ>);
+    bool pending=false;
+    for(const auto &frame:cloud_buffer_) {
+      *combined+=frame.points;pending=pending || !frame.integrated;
+    }
+    pcl::VoxelGrid<pcl::PointXYZ> voxel;voxel.setInputCloud(combined);
+    voxel.setLeafSize(cloud_voxel_size_,cloud_voxel_size_,cloud_voxel_size_);
+    pcl::PointCloud<pcl::PointXYZ> distinct;voxel.filter(distinct);
+    cloud_window_points_=distinct.size();
+    if(cloud_window_points_<static_cast<size_t>(cloud_min_points_)) {
+      std::ostringstream reason;
+      reason<<"insufficient accumulated cloud: window_s="<<cloud_window_s_
+            <<" frames="<<cloud_buffer_.size()<<" distinct_points="<<cloud_window_points_
+            <<" required="<<cloud_min_points_;
+      if(!last_frame_error_.empty())reason<<"; last_frame="<<last_frame_error_;
+      last_cloud_error_=reason.str();state("cloud_rejected",last_cloud_error_);return;
+    }
+    if(!pending)return;
+    std::vector<std::pair<const pcl::PointCloud<pcl::PointXYZ>*,Eigen::Vector3d>> observations;
+    for(const auto &frame:cloud_buffer_)if(!frame.integrated)observations.emplace_back(&frame.points,frame.origin);
+    manager_->sdf_map_->integrateExternalCloudBatch(observations);
+    for(auto &frame:cloud_buffer_) {
+      if(frame.integrated)continue;
+      // Preserve each observation's ray origin and integrate it only once.
+      frame.integrated=true;cloud_time_=std::max(cloud_time_,frame.stamp);
+    }
+    last_cloud_process_=node_->now().seconds();
+    last_cloud_error_.clear();++clouds_;
+  }
+  void cloud(const sensor_msgs::msg::PointCloud2 &msg) {
+    const double now=node_->now().seconds();
+    // Collect every frame; map_period_s throttles integration, not collection.
+    const double stamp=rclcpp::Time(msg.header.stamp).seconds();
+    if(now-stamp>timeout_ || stamp-now>cloud_future_tolerance_) {
+      last_cloud_error_="stale or future point cloud";
+      state("cloud_rejected",last_cloud_error_);return;
+    }
+    try {
+      pcl::PointCloud<pcl::PointXYZ>::Ptr input(new pcl::PointCloud<pcl::PointXYZ>), filtered(new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::fromROSMsg(msg,*input);
+      input->erase(std::remove_if(input->begin(),input->end(),[](const auto &p){
+        return !std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z);}),input->end());
+      // Defaults match upstream MapROS, with explicit task configuration.
+      if(cloud_x_filter_) {
+        pcl::PassThrough<pcl::PointXYZ> pass; pass.setInputCloud(input);
+        pass.setFilterFieldName("x");pass.setFilterLimits(cloud_min_x_,cloud_max_x_);pass.filter(*filtered);
+      } else { *filtered=*input; }
+      pcl::VoxelGrid<pcl::PointXYZ> voxel;voxel.setInputCloud(filtered);
+      voxel.setLeafSize(cloud_voxel_size_,cloud_voxel_size_,cloud_voxel_size_);
+      pcl::PointCloud<pcl::PointXYZ> points;voxel.filter(points);
+      if(points.empty()) {
+        double min_x=std::numeric_limits<double>::infinity(), max_x=-min_x;
+        size_t finite=0;
+        for(const auto &p:*input) {
+          if(!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z))continue;
+          ++finite;min_x=std::min(min_x,double(p.x));max_x=std::max(max_x,double(p.x));
+        }
+        std::ostringstream detail;
+        detail<<"empty upstream-filtered cloud: input="<<input->size()<<" finite_xyz="<<finite
+              <<" sensor_frame='"<<msg.header.frame_id<<"'";
+        if(finite)detail<<" x_range=["<<min_x<<","<<max_x<<"]";
+        detail<<" x_filter="<<cloud_x_filter_<<" required_x=["<<cloud_min_x_<<","<<cloud_max_x_
+              <<"] voxel_size="<<cloud_voxel_size_;
+        last_frame_error_=detail.str();integrateCloudWindow(now);return;
+      }
+      auto world=transform(msg.header.frame_id,msg.header.stamp);
+      for(auto &p:points) {
+        Eigen::Vector3d local=rotation_*(world*Eigen::Vector3d(p.x,p.y,p.z)-center_);
+        p.x=local.x();p.y=local.y();p.z=local.z();
+      }
+      const Eigen::Vector3d origin=rotation_*(world.translation()-center_);
+      last_frame_error_.clear();
+      cloud_buffer_.push_back({std::move(points),origin,stamp,false});
+      integrateCloudWindow(now);
+    } catch(const std::exception &e) {state("waiting_tf",e.what());}
+  }
+  Eigen::Vector3d worldPoint(const Eigen::Vector3d &p) {return rotation_.transpose()*p+center_;}
+  double steadySeconds() const {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  bool entryPoseSafe(const Eigen::Vector3d &point) {
+    if(!point.allFinite())return false;
+    auto &map=*manager_->sdf_map_;
+    // Use the native inflated occupancy columns; unknown-space handling stays
+    // with the existing optimistic path planner and final Nav2 collision checks.
+    const double step=std::max(.02,param<double>("sdf_map/resolution",.1));
+    const int cells=std::max(1,int(std::ceil(entry_clearance_/step)));
+    for(int x=-cells;x<=cells;++x)for(int y=-cells;y<=cells;++y) {
+      if(std::hypot(x*step,y*step)>entry_clearance_+step*.5)continue;
+      Eigen::Vector3d sample=point+Eigen::Vector3d(x*step,y*step,0);
+      Eigen::Vector3i index;
+      if(!map.isInMap(sample))return false;
+      map.posToIndex(sample,index);
+      if(map.isColumnOccupied(index.x(),index.y()))return false;
+    }
+    return true;
+  }
+  void rejectEntry() {
+    if(entry_active_)rejected_entries_.emplace_back(entry_target_,steadySeconds()+entry_cooldown_);
+    entry_active_=false;
+  }
+  bool planEntry(double half_x,double half_y) {
+    const double now=steadySeconds();
+    rejected_entries_.erase(std::remove_if(rejected_entries_.begin(),rejected_entries_.end(),
+      [now](const auto &item){return item.second<=now;}),rejected_entries_.end());
+    std::vector<Eigen::Vector3d> candidates;
+    const double x=half_x-entry_inset_, y=half_y-entry_inset_;
+    if(x<=0 || y<=0) {
+      entry_failed_=true;state("entry_failed","search rectangle too small for configured entry inset");return false;
+    }
+    auto add=[&](double px,double py) {
+      Eigen::Vector3d p(px,py,.3);
+      for(const auto &old:candidates)if((p-old).head<2>().norm()<.01)return;
+      candidates.push_back(p);
+    };
+    add(std::clamp(position_.x(),-x,x),std::clamp(position_.y(),-y,y));
+    // Bounded samples on all four inset edges, including corners.
+    const int nx=std::min(128,std::max(1,int(std::ceil(2*x/entry_spacing_))));
+    const int ny=std::min(128,std::max(1,int(std::ceil(2*y/entry_spacing_))));
+    for(int i=0;i<=nx;++i){const double px=-x+2*x*i/nx;add(px,-y);add(px,y);}
+    for(int i=0;i<=ny;++i){const double py=-y+2*y*i/ny;add(-x,py);add(x,py);}
+    std::stable_sort(candidates.begin(),candidates.end(),[this](const auto &a,const auto &b){
+      return (a-position_).squaredNorm()<(b-position_).squaredNorm();});
+    if(entry_active_)candidates.insert(candidates.begin(),entry_target_);
+    int attempted=0;
+    for(const auto &entry:candidates) {
+      const bool quarantined=std::any_of(rejected_entries_.begin(),rejected_entries_.end(),
+        [&](const std::pair<Eigen::Vector3d,double> &item){return (entry-item.first).head<2>().norm()<entry_spacing_*.5;});
+      if(quarantined || !entryPoseSafe(entry))continue;
+      if(attempted++>=entry_max_attempts_)break;
+      const double heading=std::atan2(entry.y()-position_.y(),entry.x()-position_.x());
+      bool safe=false;
+      try {
+        safe=manager_->planTrajToView(position_,velocity_,Eigen::Vector3d::Zero(),
+          Eigen::Vector3d(yaw_,0,0),entry,heading)==SUCCEED;
+        if(safe) {
+        auto &curve=manager_->planner_manager_->local_data_.position_traj_;
+        const double duration=curve.getTimeSum();
+        safe=std::isfinite(duration) && duration>0;
+        // Validate the optimized segment too, including native near-goal shortcuts.
+        const double velocity=std::max(.1,param<double>("manager/max_vel",1.));
+        const double dt=std::min(.05,param<double>("sdf_map/resolution",.1)/(2*velocity));
+        if(safe)for(double t=0;t<=duration+dt;t+=dt) {
+          if(!entryPoseSafe(curve.evaluateDeBoorT(std::min(t,duration)))){safe=false;break;}
+        }
+        }
+      } catch(const std::exception &e) {
+        safe=false;
+        RCLCPP_WARN_THROTTLE(node_->get_logger(),*node_->get_clock(),2000,
+          "Area entry candidate planning failed: %s",e.what());
+      }
+      if(safe) {
+        if(!entry_active_ || (entry_target_-entry).head<2>().norm()>.01) {
+          const auto world=worldPoint(entry);
+          RCLCPP_INFO(node_->get_logger(),"Area entry selected: map=(%.3f, %.3f), clearance=%.2fm, attempt=%d",
+            world.x(),world.y(),entry_clearance_,attempted);
+        }
+        entry_target_=entry;entry_active_=true;entry_blocked_since_=-1.;return true;
+      }
+      rejected_entries_.emplace_back(entry,now+entry_cooldown_);
+      if(entry_active_ && (entry_target_-entry).head<2>().norm()<.01)entry_active_=false;
+    }
+    entry_active_=false;
+    if(entry_blocked_since_<0)entry_blocked_since_=now;
+    entry_failed_=now-entry_blocked_since_>=entry_timeout_;
+    state(entry_failed_ ? "entry_failed":"entry_waiting",
+      entry_failed_ ? "no collision-free plannable area entry before timeout" :
+      "no area entry planned this cycle; waiting for map update or candidate cooldown");
+    return false;
+  }
+  void plan() {
+    const double now=node_->now().seconds();
+    if(!odom_time_ || !clouds_ || now-odom_time_>timeout_ || now-cloud_time_>timeout_) {
+      const bool cloud_missing=!clouds_ || now-cloud_time_>timeout_;
+      state("waiting_sensor",cloud_missing && !last_cloud_error_.empty() ? last_cloud_error_ :
+        "fresh real odometry and point cloud required");return;
+    }
+    if(!enabled_) {state("ready","native map ready; waiting for task enable");return;}
+    if(entry_failed_){state("entry_failed","area entry attempts exhausted");return;}
+    try {
+      const double half_x=param<double>("adapter/task_length_m",10.)/2;
+      const double half_y=param<double>("adapter/task_width_m",10.)/2;
+      const bool outside=std::abs(position_.x())>half_x || std::abs(position_.y())>half_y;
+      if(!outside && entry_active_ && (position_-entry_target_).head<2>().norm()<=.25) {
+        entry_active_=false;rejected_entries_.clear();entry_execution_failures_=0;
+      }
+      const bool entering=outside || entry_active_;
+      int result;
+      if(entering) {
+        if(!planEntry(half_x,half_y))return;
+        result=SUCCEED;
+      } else {
+        manager_->updateFrontierStruct(position_);
+        result=manager_->planExploreMotion(position_,velocity_,Eigen::Vector3d::Zero(),Eigen::Vector3d(yaw_,0,0));
+      }
+      if(result!=SUCCEED) {
+        state(!entering && (result==NO_FRONTIER || result==NO_GRID) && reachableFrontiers()==0 ? "exhausted":"planning", "native planner result",result);return;
+      }
+      auto &data=manager_->planner_manager_->local_data_;
+      auto &curve=data.position_traj_;
+      const double duration=curve.getTimeSum();
+      if(!std::isfinite(duration)||duration<=0) {state("planning","invalid native spline duration");return;}
+      bspline::msg::Bspline spline;
+      spline.drone_id=1;spline.order=manager_->planner_manager_->pp_.bspline_degree_;
+      spline.traj_id=data.traj_id_;spline.start_time=node_->now();
+      const auto control=curve.getControlPoint();
+      for(int i=0;i<control.rows();++i) {geometry_msgs::msg::Point p;p.x=control(i,0);p.y=control(i,1);p.z=control(i,2);spline.pos_pts.push_back(p);}
+      auto knots=curve.getKnot();for(int i=0;i<knots.size();++i)spline.knots.push_back(knots[i]);
+      const auto yaw_control=data.yaw_traj_.getControlPoint();
+      for(int i=0;i<yaw_control.rows();++i)spline.yaw_pts.push_back(yaw_control(i,0));
+      if(yaw_control.rows()>0)spline.yaw_dt=data.yaw_traj_.getKnotSpan();
+      spline_pub_->publish(spline);
+      nav_msgs::msg::Path path;path.header.frame_id=frame_;path.header.stamp=node_->now();
+      // Evaluate the ORIGINAL optimized spline; dense geometric sampling only.
+      const int count=std::max(1,static_cast<int>(std::ceil(duration/.02)));
+      Eigen::Vector3d previous=worldPoint(curve.evaluateDeBoorT(0));
+      auto append=[&](const Eigen::Vector3d &p){geometry_msgs::msg::PoseStamped pose;pose.header=path.header;
+        pose.pose.position.x=p.x();pose.pose.position.y=p.y();pose.pose.orientation.w=1.;path.poses.push_back(pose);};
+      append(previous);
+      for(int i=1;i<=count;++i) {
+        Eigen::Vector3d next=worldPoint(curve.evaluateDeBoorT(duration*i/count));
+        const int subdivisions=std::max(1,static_cast<int>(std::ceil((next-previous).head<2>().norm()/spacing_)));
+        for(int j=1;j<=subdivisions;++j)append(previous+(next-previous)*(double(j)/subdivisions));
+        previous=next;
+      }
+      for(size_t i=0;i+1<path.poses.size();++i) {
+        auto &a=path.poses[i].pose;auto &b=path.poses[i+1].pose;
+        const double heading=std::atan2(b.position.y-a.position.y,b.position.x-a.position.x);
+        a.orientation.z=std::sin(heading/2);a.orientation.w=std::cos(heading/2);
+      }
+      if(path.poses.size()>1)path.poses.back().pose.orientation=path.poses[path.poses.size()-2].pose.orientation;
+      if(yaw_control.rows()>0) {
+        const double goal_yaw=data.yaw_traj_.evaluateDeBoorT(duration)[0]+param<double>("adapter/region_yaw",0.);
+        path.poses.back().pose.orientation.z=std::sin(goal_yaw/2);
+        path.poses.back().pose.orientation.w=std::cos(goal_yaw/2);
+      }
+      path_pub_->publish(path);state(entering ? "entering":"executing","native optimized spline sampled for FollowPath",result);
+    } catch(const std::exception &e) {state("planning",e.what());}
+  }
+public:
+  explicit SearchEngine(rclcpp::Node::SharedPtr node):node_(node) {
+    frame_=param<std::string>("adapter/map_frame","robot_1/map");
+    const std::string ns=node_->get_namespace();
+    odom_frame_=param<std::string>("adapter/odom_frame", ns=="/" ? "odom" : ns.substr(1)+"/odom");
+    if(odom_frame_.empty() || odom_frame_.front()=='/') {
+      throw std::runtime_error("adapter/odom_frame must be a nonempty TF frame without leading slash");
+    }
+    center_<<param<double>("adapter/center_x",0.),param<double>("adapter/center_y",0.),0.;
+    rotation_=Eigen::AngleAxisd(-param<double>("adapter/region_yaw",0.),Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    timeout_=param<double>("adapter/sensor_timeout_s",3.);spacing_=param<double>("adapter/path_spacing_m",.1);
+    entry_inset_=param<double>("adapter/entry_inset_m",.8);
+    entry_spacing_=param<double>("adapter/entry_sample_spacing_m",.5);
+    entry_clearance_=param<double>("adapter/entry_clearance_m",.7);
+    entry_cooldown_=param<double>("adapter/entry_retry_cooldown_s",5.);
+    entry_timeout_=param<double>("adapter/entry_timeout_s",30.);
+    entry_max_attempts_=param<int>("adapter/entry_max_plan_attempts",4);
+    entry_max_failures_=param<int>("adapter/entry_max_execution_failures",4);
+    if(!std::isfinite(entry_inset_) || !std::isfinite(entry_spacing_) || !std::isfinite(entry_clearance_) ||
+       !std::isfinite(entry_cooldown_) || !std::isfinite(entry_timeout_) || entry_clearance_<0 ||
+       entry_inset_<=entry_clearance_ || entry_spacing_<=0 || entry_cooldown_<=0 || entry_timeout_<=0 ||
+       entry_max_attempts_<1 || entry_max_attempts_>32 || entry_max_failures_<1) {
+      throw std::runtime_error("invalid area entry parameters");
+    }
+    cloud_x_filter_=param<bool>("adapter/cloud_enable_x_filter",true);
+    cloud_min_x_=param<double>("adapter/cloud_min_x_m",.05);
+    cloud_max_x_=param<double>("adapter/cloud_max_x_m",4.);
+    cloud_voxel_size_=param<double>("adapter/cloud_voxel_size_m",.1);
+    cloud_future_tolerance_=param<double>("adapter/cloud_max_future_offset_s",.5);
+    cloud_window_s_=param<double>("adapter/cloud_accumulation_window_s",1.);
+    cloud_min_points_=param<int>("adapter/cloud_min_accumulated_points",10);
+    if(!std::isfinite(cloud_min_x_) || !std::isfinite(cloud_max_x_) || cloud_min_x_>=cloud_max_x_ ||
+       !std::isfinite(cloud_voxel_size_) || cloud_voxel_size_<=0 ||
+       !std::isfinite(cloud_future_tolerance_) || cloud_future_tolerance_<0 ||
+       !std::isfinite(cloud_window_s_) || cloud_window_s_<=0 ||
+       cloud_min_points_<1 || cloud_min_points_>1000000) {
+      throw std::runtime_error("invalid adapter cloud filter configuration");
+    }
+    if(timeout_<=0 || spacing_<=0)throw std::runtime_error("invalid adapter timeout/spacing");
+    state_pub_=node_->create_publisher<std_msgs::msg::String>("co_search/engine_state",rclcpp::QoS(1).transient_local());
+    path_pub_=node_->create_publisher<nav_msgs::msg::Path>("co_search/path",1);
+    spline_pub_=node_->create_publisher<bspline::msg::Bspline>("co_search/native_bspline",1);
+    manager_=std::make_unique<FastExplorationManager>();manager_->initialize(node_);
+    tf_=std::make_shared<tf2_ros::Buffer>(node_->get_clock());listener_=std::make_shared<tf2_ros::TransformListener>(*tf_);
+    odom_sub_=node_->create_subscription<nav_msgs::msg::Odometry>(param<std::string>("adapter/odom_topic","odom"),rclcpp::SensorDataQoS(),[this](nav_msgs::msg::Odometry::ConstSharedPtr msg){odom(*msg);});
+    cloud_sub_=node_->create_subscription<sensor_msgs::msg::PointCloud2>(param<std::string>("adapter/cloud_topic","livox/lidar"),rclcpp::SensorDataQoS(),[this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg){cloud(*msg);});
+    enable_sub_=node_->create_subscription<std_msgs::msg::Bool>("co_search/enable",1,[this](std_msgs::msg::Bool::ConstSharedPtr msg){if(msg->data&&!enabled_)manager_->MarkExplorationStart();enabled_=msg->data;});
+    entry_failure_sub_=node_->create_subscription<std_msgs::msg::Bool>("co_search/entry_failed",1,
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        if(!msg->data || !entry_active_)return;
+        rejectEntry();
+        entry_failed_=++entry_execution_failures_>=entry_max_failures_;
+        state(entry_failed_ ? "entry_failed":"entry_retry",
+          entry_failed_ ? "area entry FollowPath failure limit reached" :
+          "entry FollowPath aborted; quarantining entry and selecting an alternative");
+      });
+    timer_=node_->create_wall_timer(std::chrono::duration<double>(param<double>("adapter/plan_period_s",1.5)),[this](){plan();});
+    state("starting","native co-search initialized, no controller commands published");
+  }
+};
+int main(int argc,char **argv) {
+  rclcpp::init(argc,argv);
+  auto node=std::make_shared<rclcpp::Node>("co_search_engine",rclcpp::NodeOptions());
+  {SearchEngine engine(node);rclcpp::spin(node);}
+  if(rclcpp::ok())rclcpp::shutdown();return 0;
+}

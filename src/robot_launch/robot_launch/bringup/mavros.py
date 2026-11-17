@@ -50,6 +50,7 @@ def generate_launch_description():
         name="mavros",
         namespace=ns,
         output="screen",
+        remappings=[("mavros/global", "mavros/global_position/global")],
         parameters=[
             {"fcu_url": fcu_url},
             {"gcs_url": gcs_url},
@@ -90,5 +91,7 @@ def generate_launch_description():
             declare_pluginlists_yaml,
             declare_config_yaml,
             mavros_node,
+            Node(package="robot_launch", executable="mavros_global_rate",
+                 namespace=ns, output="screen"),
         ]
     )

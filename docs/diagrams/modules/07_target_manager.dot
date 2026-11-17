@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="目标批次管理"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="TargetArray：ID + ENU Point"];
+n1 [label="原子校验：正整数唯一 ID / 有限坐标"];
+n2 [label="替换下一任务可用的最新批次"];
+n3 [label="当前任务快照不被后续批次改变"];
+n4 [label="每次用新鲜位姿重新排序"];
+n5 [label="锁定当前目标并从待处理集合移除\n当前快照不重复发布到达"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

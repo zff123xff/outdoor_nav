@@ -1,0 +1,12 @@
+robot_namespace: robot_1
+task:
+  task_id: 142
+  waypoints: []
+  targets: [person, car]
+  center:
+  - 40.9446353
+  - 113.172819
+  - 1298.7345711102703
+  length_m: 20.0
+  width_m: 10.0
+  yaw_deg: 30.0

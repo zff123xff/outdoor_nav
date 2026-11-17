@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="145 多航点巡线"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="GPS 三元组序列"];
+n1 [label="MultiPoint Action"];
+n2 [label="逐点调用 PointGoal"];
+n3 [label="等当前导航结果再发下一点"];
+n4 [label="取消/失败立即停止后续点\n等待当前请求收尾"];
+n5 [label="全部点成功才返回成功"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

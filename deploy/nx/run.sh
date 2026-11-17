@@ -21,7 +21,7 @@ if [[ "$mode" == hil ]]; then
  [[ -z "$hil_cyclone" ]] || export CYCLONEDDS_URI="$hil_cyclone"
  [[ -z "$hil_fast" ]] || export FASTRTPS_DEFAULT_PROFILES_FILE="$hil_fast"
  [[ -z "$hil_fastdds" ]] || export FASTDDS_DEFAULT_PROFILES_FILE="$hil_fastdds"
- export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-30}"
+ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
  export OUTDOOR_NAV_WS="$ws"
  if [[ -z "${HIL_INSTALL_DIR:-}" ]]; then
   if [[ -r "$ws/install_nx/setup.bash" ]]; then

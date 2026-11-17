@@ -1,0 +1,8 @@
+SPECIAL
+PROBLEM_FILE = /mnt/d/shixi/co-search-main/install/lkh_mtsp_solver/share/lkh_mtsp_solver/resource/amtsp2_4.atsp
+SALESMEN = 1
+MTSP_OBJECTIVE = MINSUM
+RUNS = 1
+TRACE_LEVEL = 0
+PRECISION = 1
+TOUR_FILE = /mnt/d/shixi/co-search-main/install/lkh_mtsp_solver/share/lkh_mtsp_solver/resource/amtsp2_4.tour

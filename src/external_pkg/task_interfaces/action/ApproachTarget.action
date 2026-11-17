@@ -1,0 +1,12 @@
+# Simulation inspection: approach an observed target, face it, then await RViz confirmation.
+string task_id
+uint64 target_id
+---
+bool success
+string message
+uint64 target_id
+float64 distance_m
+---
+string phase
+float64 distance_m
+float64 heading_error_rad

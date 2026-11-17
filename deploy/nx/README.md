@@ -10,7 +10,6 @@ NX 需要已经能启动 Ubuntu 22.04、连接互联网，并有可使用 sudo �
 
 ```bash
 rsync -av --exclude build --exclude install --exclude log \
-  --exclude build_nx --exclude install_nx --exclude nx_deps --exclude hil_deps \
   /home/nhy/Go2-w_nav/outdoor_nav/ nx用户@NX_IP:~/outdoor_nav/
 ```
 

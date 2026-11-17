@@ -54,8 +54,12 @@ def test_heading_at_dispatch(bearing):
         # Reference and goal are both (0, 0, 0): target ENU is exactly zero.
         goals.publish(goal)
         if expect_output:
-            assert spin_until(lambda: bool(received)), 'no converted goal received'
-            return received[-1]
+            # Discovery alone does not ensure the first VOLATILE sample arrives.
+            for _ in range(10):
+                if spin_until(lambda: bool(received), timeout=.5):
+                    return received[-1]
+                goals.publish(goal)
+            pytest.fail('no converted goal received')
         assert not spin_until(lambda: bool(received), timeout=0.35)
 
     def set_robot(x, y, yaw=0.0, stale=False):

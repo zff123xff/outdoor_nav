@@ -22,10 +22,13 @@ for namespace in ('robot', 'robot_1', 'field_robot'):
             params = yaml.safe_load(rewritten.read_text())
             bridge = params['/'+namespace+'/nav2_input_bridge']['ros__parameters']
             costmap = params['/'+namespace+'/local_costmap']['local_costmap']['ros__parameters']
-            assert costmap['obstacle_layer']['pointcloud']['height_reference_frame'] == namespace+'/ground_height_reference'
-            terrain = params['/'+namespace+'/ground_tilt_filter']['ros__parameters']
-            assert terrain['robot_base_frame'] == namespace+'/base_link'
-            assert terrain['height_reference_frame'] == namespace+'/ground_height_reference'
+            pointcloud = costmap['obstacle_layer']['pointcloud']
+            configured_cloud = yaml.safe_load(source.read_text())['local_costmap']['local_costmap']['ros__parameters']['obstacle_layer']['pointcloud']
+            assert pointcloud['observation_persistence'] == configured_cloud['observation_persistence']
+            assert 'observation_keep_time' not in pointcloud
+            assert pointcloud['height_reference_frame'] == namespace+'/base_link'
+            assert pointcloud['height_reference_ground_z'] == configured_cloud['height_reference_ground_z']
+            assert '/'+namespace+'/ground_tilt_filter' not in params
             assert costmap['global_frame'] == namespace+'/map'
             assert costmap['robot_base_frame'] == namespace+'/base_link'
             assert costmap['use_sim_time'] is use_clock

@@ -1,0 +1,16 @@
+digraph G {
+graph [rankdir=TB, bgcolor="#f8fafc", pad="0.3", fontname="Noto Sans CJK SC", fontsize=24, labelloc=t, label="任务与巡检反馈"];
+node [shape=box, style="rounded,filled", fillcolor="#dbeafe", color="#64748b", fontname="Noto Sans CJK SC", fontsize=16, margin="0.18,0.14"];
+edge [fontname="Noto Sans CJK SC", fontsize=12, color="#64748b"];
+n0 [label="执行器 Action feedback / result"];
+n1 [label="活动任务进度单调递增 1…99"];
+n2 [label="约 1 Hz robot_task_status"];
+n3 [label="成功/失败/取消均终态 100\nfailures + task_feedback 区分结果"];
+n4 [label="ROS / 可选 MQTT → 指控端"];
+n5 [label="巡检到达事件独立发往仿真\n不把导航成功直接当观察到达"];
+n0 -> n1 [label=""];
+n1 -> n2 [label=""];
+n2 -> n3 [label=""];
+n3 -> n4 [label=""];
+n4 -> n5 [label=""];
+}

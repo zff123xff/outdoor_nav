@@ -1,0 +1,15 @@
+robot_namespace: robot_1
+coordinate_mode: enu
+task:
+  task_id: 142
+  targets: [person, car]
+  params:
+    center_enu:
+      east: 0.0
+      north: 0.0
+    rectangle:
+      length_m: 50.0
+      width_m: 50.0
+      yaw_deg: 0.0
+    options:
+      sensor_timeout_s: 3.0

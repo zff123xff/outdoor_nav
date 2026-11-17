@@ -2,6 +2,7 @@
 
 import os
 import math
+import re
 from tempfile import NamedTemporaryFile
 
 import yaml
@@ -22,7 +23,8 @@ from launch_ros.substitutions import FindPackageShare
 # `map` must therefore be rewritten to {robot_namespace}/map, otherwise the
 # costmap/planner look up `map`/`base_link` in a TF tree that only contains
 # robot_a/map etc.
-FRAME_PARAM_NAMES = {"global_frame", "robot_base_frame", "goal_output_frame", "height_reference_frame"}
+FRAME_PARAM_NAMES = {"global_frame", "robot_base_frame", "goal_output_frame", "height_reference_frame",
+                     "visualization_ground_reference_frame"}
 
 
 def _rewrite_param_value(param_name, value, prefix):
@@ -154,6 +156,56 @@ def _lidar_transform(context):
                  output='screen')]
 
 
+def _camera_transform(context):
+    """Optional camera optical-frame mount, shared by real and external bringup."""
+    namespace = LaunchConfiguration('robot_namespace').perform(context).strip('/')
+    path = LaunchConfiguration('params_file').perform(context)
+    with open(path, encoding='utf-8') as stream:
+        data = yaml.safe_load(stream) or {}
+    key = '/'+namespace+'/camera_mount' if namespace else 'camera_mount'
+    section = data.get(key, data.get('camera_mount', {}))
+    if not isinstance(section, dict):
+        raise RuntimeError(f'{path}: camera_mount must be a mapping')
+    mount = section.get('ros__parameters', {})
+    if not isinstance(mount, dict):
+        raise RuntimeError(f'{path}: camera_mount.ros__parameters must be a mapping')
+    enabled = mount.get('enabled', False)
+    if not isinstance(enabled, bool):
+        raise RuntimeError(f'{path}: camera_mount.enabled must be boolean')
+    if not enabled:
+        return []
+
+    def vector(name):
+        raw = mount.get(name)
+        if not isinstance(raw, list) or len(raw) != 3:
+            raise RuntimeError(f'{path}: camera_mount.{name} must contain three numbers')
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) for value in raw):
+            raise RuntimeError(f'{path}: camera_mount.{name} must contain finite numbers')
+        return [str(value) for value in raw]
+
+    def frame(name, default):
+        value = mount.get(name, default)
+        if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*', value):
+            raise RuntimeError(f'{path}: camera_mount.{name} must be a nonempty TF frame without leading slash')
+        if namespace and not value.startswith(namespace+'/'):
+            value = namespace+'/'+value
+        return value
+
+    xyz, rpy = vector('xyz'), vector('rpy')
+    parent = frame('parent_frame', 'base_link')
+    child = frame('child_frame', 'front_camera_optical_frame')
+    if parent == child:
+        raise RuntimeError(f'{path}: camera_mount parent_frame and child_frame must differ')
+    return [Node(package='tf2_ros', executable='static_transform_publisher',
+                 name='base_link_to_camera_tf', namespace=namespace,
+                 arguments=['--x', xyz[0], '--y', xyz[1], '--z', xyz[2],
+                            '--roll', rpy[0], '--pitch', rpy[1], '--yaw', rpy[2],
+                            '--frame-id', parent, '--child-frame-id', child],
+                 parameters=[{'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool)}],
+                 output='screen')]
+
+
 def generate_launch_description():
     pkg_share = get_package_share_directory("robot_launch")
     default_params = os.path.join(pkg_share, "config", "go2w_nav2.yaml")
@@ -228,6 +280,7 @@ def generate_launch_description():
     )
 
     static_tf_base_lidar = OpaqueFunction(function=_lidar_transform)
+    static_tf_base_camera = OpaqueFunction(function=_camera_transform)
 
     # map -> odom identity TF. Both frames namespaced so they don't collide
     # across robots on the same DDS domain.
@@ -406,11 +459,9 @@ def generate_launch_description():
             OpaqueFunction(function=_make_namespaced_params),
             mid360_driver,
             static_tf_base_lidar,
+            static_tf_base_camera,
             static_tf_map_odom,
             input_bridge_node,
-            Node(package='robot_launch', executable='ground_tilt_filter',
-                 name='ground_tilt_filter', namespace=ns,
-                 parameters=[params_file, sim_time_param], output='screen'),
             controller_server_node,
             straight_planner_node,
             lc_manager_node,

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>co_search_nav</name><version>0.1.0</version>
+  <description>Native co-search single-robot backend for the area_search primitive and Nav2 FollowPath.</description>
+  <maintainer email="todo@example.com">south_lake_institution</maintainer><license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend><buildtool_depend>ament_cmake_python</buildtool_depend>
+  <depend>exploration_manager</depend><depend>plan_env</depend><depend>plan_manage</depend>
+  <depend>path_searching</depend><depend>active_perception</depend><depend>bspline</depend>
+  <depend>bspline_opt</depend><depend>traj_utils</depend><depend>poly_traj</depend>
+  <depend>ppu_opt</depend><depend>snn_region</depend><depend>quadrotor_msgs</depend><depend>msg_set</depend>
+  <depend>lkh_tsp_solver</depend><depend>lkh_mtsp_solver</depend>
+  <depend>rclcpp</depend><depend>sensor_msgs</depend><depend>nav_msgs</depend><depend>geometry_msgs</depend>
+  <depend>std_msgs</depend><depend>tf2_ros</depend><depend>tf2_geometry_msgs</depend>
+  <depend>pcl_ros</depend><depend>pcl_conversions</depend><depend>cv_bridge</depend><depend>visualization_msgs</depend>
+  <depend>eigen</depend><depend>nlohmann_json</depend>
+  <exec_depend>rclpy</exec_depend><exec_depend>sensor_msgs_py</exec_depend><exec_depend>python3-numpy</exec_depend><exec_depend>nav2_msgs</exec_depend><exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend><exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>task_interfaces</exec_depend><exec_depend>python3-yaml</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

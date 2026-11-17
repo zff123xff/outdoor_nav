@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypes-validate="?encoding"?>
+<package format="3">
+  <name>ppu_opt</name>
+  <version>0.1.0</version>
+  <description>PPU communication module: pack/unpack/send/recv for SNN path planning and region allocation.
+     Provides abstract interfaces (ISnnPathPlanner / IRegionAllocator) and a factory with
+     runtime switch to select between local CPU or remote PPU execution.</description>
+  <maintainer email="user@example.com">oem</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>Eigen3</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>path_searching</depend>
+  <depend>snn_region</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

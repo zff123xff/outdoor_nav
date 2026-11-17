@@ -1,2 +1,0 @@
-int8 template_id #task_template: 0 takeoffgather, 1 search, 2 attack, 3 dropreturn, 4 shield，6中继 ，7 point，
-uint8 state_id #PRIMARY_STATE_UNKNOWN = 0,PRIMARY_STATE_UNCONFIGURED = 1,PRIMARY_STATE_INACTIVE = 2,PRIMARY_STATE_ACTIVE = 3,PRIMARY_STATE_FINALIZED = 4

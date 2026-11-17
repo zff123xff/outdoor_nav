@@ -1,0 +1,14 @@
+NAME : amtsp.-100966.tour
+COMMENT : Length = -100966
+COMMENT : Found by LKH [Keld Helsgaun] Mon Oct 26 20:00:47 2026
+TYPE : TOUR
+DIMENSION : 6
+TOUR_SECTION
+1
+2
+5
+3
+4
+6
+-1
+EOF

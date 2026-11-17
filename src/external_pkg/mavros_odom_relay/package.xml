@@ -15,7 +15,10 @@
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <depend>nav_msgs</depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>multi_goal_to_gp_goal</exec_depend>
 
   <exec_depend>python3</exec_depend>
 

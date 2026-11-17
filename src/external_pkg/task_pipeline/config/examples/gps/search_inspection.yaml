@@ -1,0 +1,9 @@
+# 配合 launch_sim.sh inspection_search_mode:=true 使用；中心需替换为实际搜索位置。
+robot_namespace: robot_1
+task:
+  task_id: 143
+  targets: [person, car]
+  center: [31.0, 120.0, 0.0]
+  length_m: 10.0
+  width_m: 10.0
+  yaw_deg: 0.0

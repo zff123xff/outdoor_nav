@@ -122,7 +122,13 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("publish_zero_velocity", publish_zero_velocity_);
 
-  costmap_ros_->configure();
+  const auto & costmap_state = costmap_ros_->configure();
+  if (costmap_state.id() != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+    RCLCPP_ERROR(
+      get_logger(), "Local costmap configuration failed (state=%s); refusing to configure controller",
+      costmap_state.label().c_str());
+    return nav2_util::CallbackReturn::FAILURE;
+  }
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
 
@@ -219,7 +225,13 @@ ControllerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Activating");
 
-  costmap_ros_->activate();
+  const auto & costmap_state = costmap_ros_->activate();
+  if (costmap_state.id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    RCLCPP_ERROR(
+      get_logger(), "Local costmap activation failed (state=%s); refusing to activate controller",
+      costmap_state.label().c_str());
+    return nav2_util::CallbackReturn::FAILURE;
+  }
   ControllerMap::iterator it;
   for (it = controllers_.begin(); it != controllers_.end(); ++it) {
     it->second->activate();
@@ -383,8 +395,10 @@ void ControllerServer::computeControl()
     progress_checker_->reset();
 
     last_valid_cmd_time_ = now();
+    bool waiting_for_navigation_data = false;
     rclcpp::WallRate loop_rate(controller_frequency_);
     while (rclcpp::ok()) {
+      const auto cycle_start = std::chrono::steady_clock::now();
       if (action_server_ == nullptr || !action_server_->is_server_active()) {
         RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
         return;
@@ -397,10 +411,32 @@ void ControllerServer::computeControl()
         return;
       }
 
-      // Don't compute a trajectory until costmap is valid (after clear costmap)
-      rclcpp::Rate r(100);
-      while (!costmap_ros_->isCurrent()) {
-        r.sleep();
+      // A temporary odometry/TF outage must stop motion without consuming the
+      // goal. Poll in the outer loop so cancellation and shutdown remain live.
+      geometry_msgs::msg::PoseStamped available_pose;
+      const bool costmap_current = costmap_ros_->isCurrent();
+      const bool pose_available = getRobotPose(available_pose);
+      if (!costmap_current || !pose_available) {
+        if (!waiting_for_navigation_data) {
+          RCLCPP_WARN(get_logger(),
+            "zero_cmd reason=navigation_data_unavailable costmap_current=%d pose_available=%d "
+            "global_frame=%s base_frame=%s tf_tolerance=%.3fs",
+            costmap_current, pose_available, costmap_ros_->getGlobalFrameID().c_str(),
+            costmap_ros_->getBaseFrameID().c_str(), costmap_ros_->getTransformTolerance());
+        }
+        waiting_for_navigation_data = true;
+        publishZeroVelocity();
+        progress_checker_->reset();
+        last_valid_cmd_time_ = now();
+        loop_rate.sleep();
+        continue;
+      }
+      if (waiting_for_navigation_data) {
+        RCLCPP_INFO(get_logger(),
+          "Navigation data recovered: resuming current goal with a fresh progress baseline.");
+        progress_checker_->reset();
+        last_valid_cmd_time_ = now();
+        waiting_for_navigation_data = false;
       }
 
       updateGlobalPath();
@@ -413,9 +449,12 @@ void ControllerServer::computeControl()
       computeAndPublishVelocity();
 
       if (!loop_rate.sleep()) {
-        RCLCPP_WARN(
-          get_logger(), "Control loop missed its desired rate of %.4fHz",
-          controller_frequency_);
+        const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - cycle_start).count();
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Control loop missed %.1fHz target: cycle=%.1fms budget=%.1fms",
+          controller_frequency_, elapsed_ms, 1000.0 / controller_frequency_);
       }
     }
   } catch (nav2_core::PlannerException & e) {
@@ -467,16 +506,26 @@ void ControllerServer::computeAndPublishVelocity()
   geometry_msgs::msg::PoseStamped pose;
 
   if (!getRobotPose(pose)) {
-    throw nav2_core::PlannerException("Failed to obtain robot pose");
+    // TF can expire between the readiness check and this lookup. The next
+    // outer iteration enters the same cancellable wait instead of aborting.
+    publishZeroVelocity();
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "zero_cmd reason=pose_lost_between_readiness_and_control");
+    progress_checker_->reset();
+    last_valid_cmd_time_ = now();
+    return;
   }
 
   if (!progress_checker_->check(pose)) {
-    throw nav2_core::PlannerException("Failed to make progress");
+    throw nav2_core::PlannerException(
+            "Failed to make progress (loaded checker=" + progress_checker_type_ + ")");
   }
 
   nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
 
   geometry_msgs::msg::TwistStamped cmd_vel_2d;
+  bool controller_exception = false;
 
   try {
     cmd_vel_2d =
@@ -487,7 +536,10 @@ void ControllerServer::computeAndPublishVelocity()
     last_valid_cmd_time_ = now();
   } catch (nav2_core::PlannerException & e) {
     if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
-      RCLCPP_WARN(this->get_logger(), "%s", e.what());
+      controller_exception = true;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "zero_cmd reason=controller_exception detail=%s", e.what());
       cmd_vel_2d.twist.angular.x = 0;
       cmd_vel_2d.twist.angular.y = 0;
       cmd_vel_2d.twist.angular.z = 0;
@@ -508,6 +560,17 @@ void ControllerServer::computeAndPublishVelocity()
 
   std::shared_ptr<Action::Feedback> feedback = std::make_shared<Action::Feedback>();
   feedback->speed = std::hypot(cmd_vel_2d.twist.linear.x, cmd_vel_2d.twist.linear.y);
+
+  if (!controller_exception && std::abs(cmd_vel_2d.twist.linear.x) < 1e-4 &&
+    std::abs(cmd_vel_2d.twist.angular.z) < 1e-4)
+  {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "zero_cmd reason=controller_output_zero controller=%s pose=(%.3f,%.3f) "
+      "odom_vx=%.3f odom_wz=%.3f path_points=%zu",
+      current_controller_.c_str(), pose.pose.position.x, pose.pose.position.y,
+      twist.x, twist.theta, current_path_.poses.size());
+  }
 
   // Find the closest pose to current pose on global path
   nav_msgs::msg::Path & current_path = current_path_;
@@ -611,6 +674,22 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
 {
   geometry_msgs::msg::PoseStamped current_pose;
   if (!costmap_ros_->getRobotPose(current_pose)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "pose_unavailable reason=tf_lookup_failed global_frame=%s base_frame=%s",
+      costmap_ros_->getGlobalFrameID().c_str(), costmap_ros_->getBaseFrameID().c_str());
+    return false;
+  }
+  // A latest-TF lookup can succeed indefinitely after its publisher stops.
+  // Treat cached poses outside the configured TF tolerance as unavailable.
+  const double pose_age = (now() - rclcpp::Time(current_pose.header.stamp)).seconds();
+  if (std::abs(pose_age) > costmap_ros_->getTransformTolerance()) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "pose_unavailable reason=stale_tf age=%.3fs tolerance=%.3fs "
+      "pose_stamp=%.3f now=%.3f",
+      pose_age, costmap_ros_->getTransformTolerance(),
+      rclcpp::Time(current_pose.header.stamp).seconds(), now().seconds());
     return false;
   }
   pose = current_pose;

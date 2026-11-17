@@ -16,3 +16,6 @@ string phase
 float64 distance_to_target_m
 bool reached
 string primitive_id
+# ENU start-to-current / start-to-target percentage; -1 if no fresh pose.
+# Completion is still determined only by the navigation Action result.
+float64 progress

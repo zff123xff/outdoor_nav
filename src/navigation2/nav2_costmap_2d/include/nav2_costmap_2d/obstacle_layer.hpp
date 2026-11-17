@@ -255,6 +255,13 @@ protected:
   int combination_method_;
   /// If true, reset this layer's grid to default before each updateBounds (raytrace + marking).
   bool clear_before_update_{false};
+  /// Minimum valid returns per XY cell in the selected observation window.
+  int min_points_per_cell_{1};
+  /// Zero counts each cloud independently; positive values combine recent clouds.
+  double point_count_window_s_{0.0};
+  bool have_marking_bounds_{false};
+  double marking_min_x_{0.0}, marking_min_y_{0.0};
+  double marking_max_x_{0.0}, marking_max_y_{0.0};
 };
 
 }  // namespace nav2_costmap_2d

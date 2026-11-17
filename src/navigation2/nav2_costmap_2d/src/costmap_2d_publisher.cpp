@@ -42,6 +42,7 @@
 #include <memory>
 #include <utility>
 
+#include "geometry_msgs/msg/point_stamped.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
 
 namespace nav2_costmap_2d
@@ -54,10 +55,16 @@ Costmap2DPublisher::Costmap2DPublisher(
   Costmap2D * costmap,
   std::string global_frame,
   std::string topic_name,
-  bool always_send_full_costmap)
+  bool always_send_full_costmap,
+  const std::shared_ptr<tf2_ros::Buffer> & tf_buffer,
+  std::string visualization_ground_reference_frame,
+  double visualization_ground_offset_z)
 : costmap_(costmap),
   global_frame_(global_frame),
   topic_name_(topic_name),
+  tf_buffer_(tf_buffer),
+  visualization_ground_reference_frame_(visualization_ground_reference_frame),
+  visualization_ground_offset_z_(visualization_ground_offset_z),
   active_(false),
   always_send_full_costmap_(always_send_full_costmap)
 {
@@ -107,6 +114,30 @@ Costmap2DPublisher::Costmap2DPublisher(
 
 Costmap2DPublisher::~Costmap2DPublisher() {}
 
+double Costmap2DPublisher::visualizationGroundZ()
+{
+  if (visualization_ground_reference_frame_.empty()) {
+    return 0.0;
+  }
+  try {
+    const auto transform = tf_buffer_->lookupTransform(
+      global_frame_, visualization_ground_reference_frame_, tf2::TimePointZero);
+    geometry_msgs::msg::PointStamped reference_point;
+    geometry_msgs::msg::PointStamped global_point;
+    reference_point.header.frame_id = visualization_ground_reference_frame_;
+    reference_point.point.z = visualization_ground_offset_z_;
+    tf2::doTransform(reference_point, global_point, transform);
+    visualization_ground_z_ = global_point.point.z;
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 5000,
+      "Could not resolve visualization ground plane %s <- %s: %s; keeping z=%.3f",
+      global_frame_.c_str(), visualization_ground_reference_frame_.c_str(), ex.what(),
+      visualization_ground_z_);
+  }
+  return visualization_ground_z_;
+}
+
 // TODO(bpwilcox): find equivalent/workaround to ros::SingleSubscriberPublishr
 /*
 void Costmap2DPublisher::onNewSubscription(const ros::SingleSubscriberPublisher& pub)
@@ -137,7 +168,7 @@ void Costmap2DPublisher::prepareGrid()
   costmap_->mapToWorld(0, 0, wx, wy);
   grid_->info.origin.position.x = wx - grid_resolution / 2;
   grid_->info.origin.position.y = wy - grid_resolution / 2;
-  grid_->info.origin.position.z = 0.0;
+  grid_->info.origin.position.z = visualizationGroundZ();
   grid_->info.origin.orientation.w = 1.0;
   saved_origin_x_ = costmap_->getOriginX();
   saved_origin_y_ = costmap_->getOriginY();
@@ -170,7 +201,7 @@ void Costmap2DPublisher::prepareCostmap()
   costmap_->mapToWorld(0, 0, wx, wy);
   costmap_raw_->metadata.origin.position.x = wx - resolution / 2;
   costmap_raw_->metadata.origin.position.y = wy - resolution / 2;
-  costmap_raw_->metadata.origin.position.z = 0.0;
+  costmap_raw_->metadata.origin.position.z = visualizationGroundZ();
   costmap_raw_->metadata.origin.orientation.w = 1.0;
 
   costmap_raw_->data.resize(costmap_raw_->metadata.size_x * costmap_raw_->metadata.size_y);
@@ -255,7 +286,7 @@ Costmap2DPublisher::costmap_service_callback(
   response->map.metadata.update_time = current_time;
   response->map.metadata.origin.position.x = costmap_->getOriginX();
   response->map.metadata.origin.position.y = costmap_->getOriginY();
-  response->map.metadata.origin.position.z = 0.0;
+  response->map.metadata.origin.position.z = visualizationGroundZ();
   response->map.metadata.origin.orientation = tf2::toMsg(quaternion);
   response->map.data.resize(data_length);
   response->map.data.assign(data, data + data_length);

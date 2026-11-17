@@ -1,0 +1,605 @@
+"""One pending frame, one inference worker, original-image coordinates."""
+
+from copy import deepcopy
+from collections import deque
+import math
+from pathlib import Path
+import threading
+import time
+
+import numpy as np
+from cv_bridge import CvBridge
+import rclpy
+from rclpy.exceptions import ROSInterruptException
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
+from rcl_interfaces.msg import ParameterDescriptor
+from sensor_msgs.msg import Image, CameraInfo, PointCloud2
+from sensor_msgs_py import point_cloud2
+from rclpy.clock import Clock, ClockType
+from tf2_ros import TransformListener
+from patrol_node.live_tf_buffer import LiveRobotTransformBuffer
+from visualization_msgs.msg import Marker, MarkerArray
+from .targets import targets_path, read_targets, write_targets, matches
+from .projection import transform_matrix, apply_transform, project, box_position, Tracks
+from yolo_interfaces.msg import Detection, DetectionArray
+
+
+class LatestFrame:
+    """A single replaceable slot; stop wakes an idle consumer."""
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._frame = None
+        self._stopped = False
+
+    def put(self, frame):
+        with self._condition:
+            if not self._stopped:
+                self._frame = frame
+                self._condition.notify()
+
+    def take(self):
+        with self._condition:
+            self._condition.wait_for(lambda: self._stopped or self._frame is not None)
+            if self._stopped:
+                return None
+            frame, self._frame = self._frame, None
+            return frame
+
+    def stop(self):
+        with self._condition:
+            self._stopped = True
+            self._frame = None
+            self._condition.notify_all()
+
+
+def detection_array(result, header, width, height, targets=(), scale=(1., 1.)):
+    message = DetectionArray(header=header, image_width=width, image_height=height)
+    if result.boxes is None:
+        raise ValueError('Model did not return detection boxes')
+    # One GPU-to-CPU transfer per array, rather than synchronizing for each box.
+    coordinates = result.boxes.xyxy.cpu().numpy()
+    classes = result.boxes.cls.cpu().numpy()
+    scores = result.boxes.conf.cpu().numpy()
+    for xyxy, class_value, score in zip(coordinates, classes, scores):
+        if not all(math.isfinite(float(v)) for v in (*xyxy, class_value, score)):
+            continue
+        # Model runs on a possibly downscaled image; report original-pixel boxes so
+        # CameraInfo-based projection keeps working.
+        x1, y1, x2, y2 = [int(round(v*s)) for v, s in zip(xyxy, (scale[0], scale[1],
+                                                                scale[0], scale[1]))]
+        x1, x2 = [max(0, min(v, width - 1)) for v in (x1, x2)]
+        y1, y2 = [max(0, min(v, height - 1)) for v in (y1, y2)]
+        if x2 <= x1 or y2 <= y1:
+            continue
+        class_id = int(class_value)
+        names = result.names
+        name = names.get(class_id, str(class_id)) if isinstance(names, dict) else names[class_id]
+        if not matches(targets, str(name), class_id):
+            continue
+        message.detections.append(Detection(
+            class_id=class_id, class_name=str(name), confidence=float(score),
+            x_min=x1, y_min=y1, x_max=x2, y_max=y2,
+            center_x=(x1 + x2) / 2.0, center_y=(y1 + y2) / 2.0,
+            width=float(x2 - x1), height=float(y2 - y1)))
+    return message
+
+
+class YoloDetector(Node):
+    def __init__(self):
+        super().__init__('yolo_detector')
+        defaults = {
+            'image_topic': 'front_camera/image_raw',
+            'detection_topic': 'yolo/detections',
+            'debug_image_topic': 'yolo/debug_image',
+            'expected_width': 640, 'expected_height': 480,
+            'input_width': 0, 'input_height': 0,
+            'expected_encoding': 'rgb8', 'strict_image_size': True,
+            'model_path': '/home/nhy/models/best.engine',
+            'model_input_width': 640, 'model_input_height': 480,
+            'confidence_threshold': 0.4, 'iou_threshold': 0.45,
+            'max_detections': 100, 'publish_debug_image': False,
+            'targets_file': '',
+            'camera_info_topic': 'front_camera/camera_info',
+            'cloud_topic': 'livox/lidar',
+            'marker_topic': 'targets/markers',
+            'map_frame': 'map',
+            'publish_target_markers': True,
+            'sensor_timeout_s': 1.5,
+            'sync_tolerance_s': 0.15,
+            'cloud_accumulation_s': 1.0,
+            'min_lidar_points': 3,
+            'max_depth_spread_m': 0.5,
+            'track_distance_m': 1.0,
+            'camera_info_source': 'yaml',
+            'camera_scale_to_image': True,
+            'camera_width': 1920, 'camera_height': 1080,
+            'camera_fx': 960.0, 'camera_fy': 960.0,
+            'camera_cx': 960.0, 'camera_cy': 540.0,
+            'camera_distortion_model': 'plumb_bob',
+            'camera_distortion_coefficients': [0., 0., 0., 0., 0.],
+            'camera_optical_frame': '',
+        }
+        self.settings = {
+            name: self.declare_parameter(
+                name, default, ParameterDescriptor(read_only=True)).value
+            for name, default in defaults.items()
+        }
+        self._validate_settings()
+        self._diagnostic_lock = threading.Lock()
+        self._diagnostic = dict(started=time.monotonic(), last_input=0., last_valid=0.,
+                                last_debug=0., received=0, published=0,
+                                input_error='', skip_reason='', model_ready=False,
+                                inference_started=0., worker_stage='model initialization')
+        self._debug_log_reason = None
+        self._debug_log_time = 0.
+        self._debug_was_publishing = False
+        self.targets_file = targets_path(self.get_namespace(), self.settings['targets_file'])
+        if not self.targets_file.exists():
+            write_targets(self.targets_file, [])
+        self._targets_lock = threading.Lock()
+        self._targets = tuple(read_targets(self.targets_file))
+        self._target_timer = self.create_timer(1., self._reload_targets,
+            clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.bridge = CvBridge()
+        self.frames = LatestFrame()
+        self._stopping = threading.Event()
+        self._failure = None
+        self._failure_guard = self.create_guard_condition(self._raise_worker_failure)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST, depth=1)
+        self.publisher = self.create_publisher(
+            DetectionArray, self.settings['detection_topic'], 10)
+        self.markers = (self.create_publisher(MarkerArray, self.settings['marker_topic'], 10)
+                        if self.settings['publish_target_markers'] else None)
+        self.camera = None
+        self.clouds = deque(maxlen=120)
+        self.marker_tracks = Tracks(float(self.settings['track_distance_m']))
+        self.map_frame = self.settings['map_frame'].strip('/')
+        namespace = self.get_namespace().strip('/')
+        if namespace and not self.map_frame.startswith(namespace+'/'):
+            self.map_frame = namespace+'/'+self.map_frame
+        base_frame = 'base_link' if not namespace else namespace+'/base_link'
+        self.tf_buffer = LiveRobotTransformBuffer(self.map_frame, base_frame)
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.camera_info_sub = (self.create_subscription(
+            CameraInfo, self.settings['camera_info_topic'], self.camera_info_callback, qos)
+            if self.settings['publish_target_markers'] and
+            self.settings['camera_info_source'] == 'topic' else None)
+        self.cloud_sub = (self.create_subscription(
+            PointCloud2, self.settings['cloud_topic'], self.cloud_callback, qos)
+            if self.settings['publish_target_markers'] else None)
+        self.projection_sub = (self.create_subscription(
+            DetectionArray, self.settings['detection_topic'], self.project_detections, 10)
+            if self.settings['publish_target_markers'] else None)
+        if self.settings['publish_target_markers'] and self.settings['camera_info_source'] == 'yaml':
+            self.camera = self._camera_info_from_yaml()
+        self.debug_publisher = (
+            self.create_publisher(Image, self.settings['debug_image_topic'], qos)
+            if self.settings['publish_debug_image'] else None)
+        self.subscription = self.create_subscription(
+            Image, self.settings['image_topic'], self.image_callback, qos)
+        self._debug_log_timer = self.create_timer(1., self._log_debug_health,
+            clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.get_logger().info(
+            f'Debug image configured: enabled={bool(self.debug_publisher)}, '
+            f'input={self.subscription.topic_name}, output={self.settings["debug_image_topic"]}, '
+            f'QoS=BEST_EFFORT/depth=1, targets_file={self.targets_file}, '
+            f'targets={list(self._targets)}')
+        self.worker = threading.Thread(target=self._run_worker, name='yolo-inference')
+        self.worker.start()
+
+    def _reload_targets(self):
+        try:
+            values = tuple(read_targets(self.targets_file))
+        except Exception as exc:
+            self.get_logger().error(f'Target file not updated: {exc}', throttle_duration_sec=5.)
+            return
+        with self._targets_lock:
+            previous = self._targets
+            self._targets = values
+        if previous != values:
+            self.get_logger().info(
+                f'Detection targets updated: {list(values)}; file={self.targets_file}; '
+                + ('inference enabled' if values else 'standby: detections/debug_image paused'))
+
+    def _record_diagnostic(self, **values):
+        with self._diagnostic_lock:
+            self._diagnostic.update(values)
+
+    def _log_debug_health(self):
+        """Explain local publish gating; DDS discovery alone is not image delivery."""
+        if self._stopping.is_set():
+            return
+        now = time.monotonic()
+        with self._targets_lock:
+            targets = self._targets
+        with self._diagnostic_lock:
+            status = self._diagnostic.copy()
+        warning = False
+        if self._failure is not None:
+            reason = f'worker failed at {status["worker_stage"]}: {self._failure}'
+            warning = True
+        elif self.debug_publisher is None:
+            reason = 'publish_debug_image=false (restart with true to enable)'
+        elif not targets:
+            reason = f'targets is empty; standby; check {self.targets_file}'
+        elif not status['last_input'] or now-status['last_input'] > 5.:
+            age = now-(status['last_input'] or status['started'])
+            reason = f'no recent input image on {self.subscription.topic_name}; silence={age:.1f}s'
+            warning = True
+        elif not status['model_ready']:
+            reason = f'model initialization/warmup not finished; elapsed={now-status["started"]:.1f}s'
+        elif status['last_debug'] and now-status['last_debug'] < 5.:
+            if not self._debug_was_publishing:
+                self.get_logger().info(
+                    f'debug_image publishing: topic={self.debug_publisher.topic_name}, '
+                    f'encoding=bgr8, targets={list(targets)}, published={status["published"]}, '
+                    f'matched_subscribers={self.debug_publisher.get_subscription_count()}')
+            self._debug_was_publishing = True
+            self._debug_log_reason = None
+            return
+        elif status['input_error']:
+            reason = status['input_error']
+            warning = True
+        elif status['inference_started']:
+            reason = f'inference has not returned; elapsed={now-status["inference_started"]:.1f}s'
+            warning = now-status['inference_started'] > 5.
+        else:
+            reason = status['skip_reason'] or f'waiting for processed frame; stage={status["worker_stage"]}'
+        # Reasons with ages change every second; throttle by category, not full text.
+        category = reason.split(';')[0].split(':')[0]
+        if category != self._debug_log_reason or now-self._debug_log_time >= 5.:
+            log = self.get_logger().warning if warning else self.get_logger().info
+            log(f'debug_image not publishing: {reason}; received={status["received"]}, '
+                f'published={status["published"]}')
+            self._debug_log_reason, self._debug_log_time = category, now
+        self._debug_was_publishing = False
+
+    def _validate_settings(self):
+        p = self.settings
+        for name in ('image_topic', 'detection_topic', 'debug_image_topic'):
+            topic = p[name]
+            if not topic or topic.startswith(('/', '~')):
+                raise ValueError(f'{name} must be a relative topic: {topic!r}')
+        if len({p[k] for k in ('image_topic', 'detection_topic', 'debug_image_topic')}) != 3:
+            raise ValueError('Image, detection and debug topics must be distinct')
+        for name in ('expected_width', 'expected_height', 'model_input_width',
+                     'model_input_height', 'max_detections'):
+            if p[name] <= 0:
+                raise ValueError(f'{name} must be positive')
+        for name in ('model_input_width', 'model_input_height'):
+            if p[name] % 32:
+                raise ValueError(f'{name} must be a multiple of 32')
+        for name in ('input_width', 'input_height'):
+            value = p.get(name, 0)
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f'{name} must be a non-negative integer (0 = expected size)')
+        if (p.get('input_width', 0) == 0) != (p.get('input_height', 0) == 0):
+            raise ValueError('input_width and input_height must be set together')
+        if p.get('input_width', 0) > p['expected_width']:
+            raise ValueError('input_width must not exceed expected_width')
+        for name in ('confidence_threshold', 'iou_threshold'):
+            if not math.isfinite(p[name]) or not 0 <= p[name] <= 1:
+                raise ValueError(f'{name} must be between 0 and 1')
+        for name in ('cloud_accumulation_s', 'sync_tolerance_s', 'max_depth_spread_m'):
+            if not math.isfinite(p[name]) or p[name] < 0:
+                raise ValueError(f'{name} must be non-negative and finite')
+        for name in ('sensor_timeout_s', 'track_distance_m'):
+            if not math.isfinite(p[name]) or p[name] <= 0:
+                raise ValueError(f'{name} must be positive and finite')
+        if p['min_lidar_points'] < 1:
+            raise ValueError('min_lidar_points must be positive')
+        if p['camera_info_source'] not in ('yaml', 'topic'):
+            raise ValueError("camera_info_source must be 'yaml' or 'topic'")
+        if p['publish_target_markers'] and p['camera_info_source'] == 'yaml':
+            if p['camera_width'] <= 0 or p['camera_height'] <= 0:
+                raise ValueError('camera_width and camera_height must be positive')
+            if any(not math.isfinite(p[name]) for name in
+                   ('camera_fx', 'camera_fy', 'camera_cx', 'camera_cy')) or \
+                    p['camera_fx'] <= 0 or p['camera_fy'] <= 0:
+                raise ValueError('camera intrinsic parameters are invalid')
+            if not isinstance(p['camera_distortion_coefficients'], list) or not all(
+                    math.isfinite(value) for value in p['camera_distortion_coefficients']):
+                raise ValueError('camera_distortion_coefficients must be a finite list')
+        for name in ('camera_info_topic', 'cloud_topic', 'marker_topic'):
+            if not p[name] or p[name].startswith(('/', '~')):
+                raise ValueError(f'{name} must be a relative topic: {p[name]!r}')
+        if not p['map_frame'] or p['map_frame'].startswith('/'):
+            raise ValueError('map_frame must be a TF frame without a leading slash')
+        path = Path(p['model_path']).expanduser()
+        if path.suffix != '.engine' or not path.is_file():
+            raise ValueError(f'model_path must point to an existing .engine file: {path}')
+        p['model_path'] = str(path)
+
+    def _camera_info_from_yaml(self):
+        msg = CameraInfo()
+        msg.width, msg.height = int(self.settings['camera_width']), int(self.settings['camera_height'])
+        msg.k = [float(self.settings['camera_fx']), 0., float(self.settings['camera_cx']),
+                 0., float(self.settings['camera_fy']), float(self.settings['camera_cy']),
+                 0., 0., 1.]
+        msg.distortion_model = str(self.settings['camera_distortion_model'])
+        msg.d = [float(value) for value in self.settings['camera_distortion_coefficients']]
+        msg.header.frame_id = str(self.settings['camera_optical_frame'])
+        return msg
+
+    def camera_info_callback(self, msg):
+        self.camera = msg
+
+    def cloud_callback(self, msg):
+        self.clouds.append(msg)
+        cutoff = (Time.from_msg(msg.header.stamp).nanoseconds/1e9 -
+                  self.settings['cloud_accumulation_s'])
+        while self.clouds and Time.from_msg(self.clouds[0].header.stamp).nanoseconds/1e9 < cutoff:
+            self.clouds.popleft()
+
+    def project_detections(self, msg):
+        if not msg.detections or self.camera is None or not self.clouds:
+            return
+        stamp = Time.from_msg(msg.header.stamp).nanoseconds/1e9
+        now = self.get_clock().now().nanoseconds/1e9
+        if abs(now-stamp) > self.settings['sensor_timeout_s']:
+            self.get_logger().warning('3D markers skipped: stale detection timestamp',
+                                      throttle_duration_sec=5.0)
+            return
+        window_start = stamp-self.settings['cloud_accumulation_s']
+        clouds = [cloud for cloud in self.clouds
+                  if window_start <= Time.from_msg(cloud.header.stamp).nanoseconds/1e9 <=
+                  stamp+self.settings['sync_tolerance_s']]
+        if not clouds:
+            return
+        nearest = min(clouds, key=lambda cloud: abs(
+            Time.from_msg(cloud.header.stamp).nanoseconds/1e9-stamp))
+        nearest_stamp = Time.from_msg(nearest.header.stamp).nanoseconds/1e9
+        if abs(stamp-nearest_stamp) > self.settings['sync_tolerance_s']:
+            return
+        if self.settings['camera_info_source'] == 'yaml':
+            camera = deepcopy(self.camera)
+            if self.settings['camera_scale_to_image']:
+                sx, sy = msg.image_width/camera.width, msg.image_height/camera.height
+                camera.k[0] *= sx
+                camera.k[2] *= sx
+                camera.k[4] *= sy
+                camera.k[5] *= sy
+                camera.width, camera.height = msg.image_width, msg.image_height
+            if not camera.header.frame_id:
+                camera.header.frame_id = msg.header.frame_id
+        else:
+            camera = self.camera
+        if ((msg.image_width, msg.image_height) != (camera.width, camera.height) or
+                not msg.header.frame_id or msg.header.frame_id != camera.header.frame_id):
+            self.get_logger().warning('Detection image and CameraInfo size/optical frame mismatch',
+                                      throttle_duration_sec=5.0)
+            return
+        point_sets, camera_point_sets, map_point_sets = [], [], []
+        camera_stamp = Time.from_msg(msg.header.stamp)
+        for cloud in clouds:
+            try:
+                raw = list(point_cloud2.read_points(
+                    cloud, field_names=('x', 'y', 'z'), skip_nans=True))
+                if not raw:
+                    continue
+                points = np.asarray([(float(p[0]), float(p[1]), float(p[2])) for p in raw])
+                cloud_stamp = Time.from_msg(cloud.header.stamp)
+                camera_tf = self.tf_buffer.lookup_transform_full(
+                    camera.header.frame_id, camera_stamp, cloud.header.frame_id,
+                    cloud_stamp, self.map_frame)
+                map_tf = self.tf_buffer.lookup_transform(
+                    self.map_frame, cloud.header.frame_id, cloud_stamp)
+                camera_points = apply_transform(points, transform_matrix(camera_tf.transform))
+                valid = np.isfinite(camera_points).all(axis=1) & (camera_points[:, 2] > .05)
+                points, camera_points = points[valid], camera_points[valid]
+                if not len(points):
+                    continue
+                map_points = apply_transform(points, transform_matrix(map_tf.transform))
+            except Exception as exc:
+                self.get_logger().warning(f'Skipping pointcloud frame in accumulation window: {exc}',
+                                          throttle_duration_sec=5.0)
+                continue
+            point_sets.append(points)
+            camera_point_sets.append(camera_points)
+            map_point_sets.append(map_points)
+        if not point_sets:
+            return
+        camera_points = np.concatenate(camera_point_sets, axis=0)
+        map_points = np.concatenate(map_point_sets, axis=0)
+        try:
+                uv = project(camera_points, camera)
+            observations = []
+            for box in msg.detections:
+                point = box_position(box, uv, camera_points, map_points,
+                    self.settings['min_lidar_points'],
+                    self.settings['max_depth_spread_m'])
+                if point is not None:
+                    observations.append((box.class_name, point))
+            target_ids = self.marker_tracks.update(observations, now)
+            markers = []
+            for target_id, (kind, point) in zip(target_ids, observations):
+                marker = Marker()
+                marker.header.frame_id = self.map_frame
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.ns = 'yolo_targets'
+                marker.id = int(target_id)
+                marker.type = Marker.SPHERE
+                marker.action = Marker.ADD
+                marker.pose.position.x, marker.pose.position.y, marker.pose.position.z = map(float, point)
+                marker.pose.orientation.w = 1.0
+                marker.scale.x = marker.scale.y = marker.scale.z = .3
+                marker.color.a = 1.0
+                marker.color.g = 1.0
+                marker.text = str(kind)
+                marker.lifetime.sec = 3
+                markers.append(marker)
+            if markers:
+                self.markers.publish(MarkerArray(markers=markers))
+        except Exception as exc:
+            self.get_logger().warning(f'3D target projection failed: {exc}', throttle_duration_sec=5.0)
+
+    def image_callback(self, msg):
+        with self._diagnostic_lock:
+            self._diagnostic['last_input'] = time.monotonic()
+            self._diagnostic['received'] += 1
+        with self._targets_lock:
+            if not self._targets:
+                return
+        p = self.settings
+        if msg.width <= 0 or msg.height <= 0:
+            self._record_diagnostic(input_error='input image rejected: zero width/height')
+            self.get_logger().error('Invalid zero-sized image', throttle_duration_sec=5.0)
+            return
+        want = (p.get('input_width') or p['expected_width'],
+                p.get('input_height') or p['expected_height'])
+        if p['strict_image_size'] and (msg.width, msg.height) != want:
+            self._record_diagnostic(input_error=(
+                f'input image rejected: size={msg.width}x{msg.height}, '
+                f'expected={want[0]}x{want[1]}'))
+            self.get_logger().error(
+                f'Invalid image size {msg.width}x{msg.height}; expected '
+                f'{want[0]}x{want[1]}', throttle_duration_sec=5.0)
+            return
+        if msg.encoding != p['expected_encoding']:
+            self.get_logger().warning(
+                f'Encoding {msg.encoding!r}; expected {p["expected_encoding"]!r}; '
+                'attempting bgr8 conversion', throttle_duration_sec=5.0)
+        try:
+            image = self._to_bgr(msg, p['expected_encoding'])
+        except Exception as error:
+            self._record_diagnostic(input_error=f'image conversion failed: {error}')
+            self.get_logger().error(f'Image conversion failed: {error}', throttle_duration_sec=5.0)
+            return
+        self._record_diagnostic(last_valid=time.monotonic(), input_error='')
+        self.frames.put((image, deepcopy(msg.header)))
+
+    @staticmethod
+    def _to_bgr(msg, expected_encoding):
+        """Zero-copy view when the publisher already sends the model's layout.
+
+        cv_bridge allocates and copies the whole frame (measured 20 ms for 1920x1080,
+        i.e. a fifth of YOLO's end-to-end budget). When encoding matches and the row
+        stride is exactly width*3, a read-only numpy view is enough: ultralytics
+        letterboxes into its own buffer anyway, so nothing writes to this array.
+        """
+        # Only bgr8 can be used as-is: the model expects BGR, so an rgb8 message must
+        # still go through cv_bridge (channel swap), otherwise R and B are inverted.
+        if (msg.encoding == 'bgr8' == expected_encoding and msg.width > 0 and msg.height > 0 and
+                msg.step == msg.width*3):
+            buffer = np.frombuffer(msg.data, dtype=np.uint8)
+            if buffer.size == msg.height*msg.step:
+                return buffer.reshape((msg.height, msg.width, 3))
+        return CvBridge().imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def _load_model(self):
+        # All TensorRT/CUDA work, including warmup, stays on this worker.
+        from ultralytics import YOLO
+        model = YOLO(self.settings['model_path'], task='detect')
+        warmup = np.zeros((self.settings['model_input_height'],
+                           self.settings['model_input_width'], 3), dtype=np.uint8)
+        self._predict(model, warmup)
+        backend = model.predictor.model
+        shape = tuple(backend.bindings['images'].shape)
+        expected = (1, 3, *warmup.shape[:2])
+        if backend.dynamic or shape != expected:
+            raise ValueError(f'Expected static engine {expected}; got {shape}, '
+                             f'dynamic={backend.dynamic}')
+        self.get_logger().info(
+            f'TensorRT ready: input={shape}, fp16_io={backend.fp16}; waiting for images')
+        return model
+
+    def _predict(self, model, image):
+        p = self.settings
+        return model.predict(
+            source=image, imgsz=(p['model_input_height'], p['model_input_width']),
+            rect=False, batch=1, device=0, conf=p['confidence_threshold'],
+            iou=p['iou_threshold'], max_det=p['max_detections'], verbose=False)
+
+    def _run_worker(self):
+        try:
+            model = self._load_model()
+            self._record_diagnostic(model_ready=True, worker_stage='waiting for image')
+            while not self._stopping.is_set():
+                frame = self.frames.take()
+                if frame is None:
+                    break
+                image, header = frame
+                with self._targets_lock:
+                    targets = self._targets
+                if not targets:
+                    self._record_diagnostic(skip_reason='targets became empty before inference')
+                    continue
+                self._record_diagnostic(inference_started=time.monotonic(), worker_stage='inference',
+                                        skip_reason='')
+                result = self._predict(model, image)[0]
+                self._record_diagnostic(inference_started=0., worker_stage='filtering detections')
+                with self._targets_lock:
+                    if self._targets != targets:
+                        self._record_diagnostic(skip_reason='targets changed during inference; frame discarded')
+                        continue  # Discard inference started for an earlier selection.
+                settings = self.settings
+                scale = (settings['expected_width']/image.shape[1],
+                         settings['expected_height']/image.shape[0])
+                message = detection_array(result, header, settings['expected_width'],
+                                          settings['expected_height'], targets, scale)
+                if self._stopping.is_set() or not self.context.ok():
+                    break
+                self.publisher.publish(message)
+                if self.debug_publisher is not None:
+                    self._record_diagnostic(worker_stage='rendering debug image')
+                    import cv2
+                    annotated = image.copy()
+                    for box in message.detections:
+                        cv2.rectangle(annotated, (box.x_min, box.y_min), (box.x_max, box.y_max), (0, 255, 0), 2)
+                        cv2.putText(annotated, box.class_name, (box.x_min, max(15, box.y_min)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 0), 1)
+                    debug = self.bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+                    debug.header = header
+                    self._record_diagnostic(worker_stage='publishing debug image')
+                    self.debug_publisher.publish(debug)
+                    with self._diagnostic_lock:
+                        self._diagnostic['last_debug'] = time.monotonic()
+                        self._diagnostic['published'] += 1
+                self._record_diagnostic(worker_stage='waiting for image')
+        except Exception as error:
+            if not self._stopping.is_set() and self.context.ok():
+                self._failure = error
+                with self._diagnostic_lock:
+                    stage = self._diagnostic['worker_stage']
+                self.get_logger().error(f'debug_image stopped: worker failed at {stage}: {error}')
+                self._failure_guard.trigger()
+
+    def _raise_worker_failure(self):
+        raise RuntimeError(f'YOLO worker failed: {self._failure}') from self._failure
+
+    def destroy_node(self):
+        self._stopping.set()
+        self.frames.stop()
+        # Never destroy publishers while a worker can still access them.
+        self.worker.join()
+        return super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = None
+    exit_code = 0
+    try:
+        node = YoloDetector()
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException, ROSInterruptException):
+        pass
+    except Exception as error:
+        rclpy.logging.get_logger('yolo_detector').fatal(str(error))
+        exit_code = 1
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    return exit_code
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,0 +1,29 @@
+/**:
+  ros__parameters:
+    # Required. UE and this node must use the same stream key.
+    rtmp_url: "rtmp://192.168.1.199:8554/uav1"
+    # pull: read from an RTMP server; listen: UE pushes directly to this node.
+    mode: pull
+    image_topic: front_camera/image_raw
+    # Empty selects <namespace>/front_camera_optical_frame.
+    frame_id: ""
+    # Output size after scaling. 640x480 keeps the YOLO/calibration contract; set
+    # 1920x1080 to publish full resolution (measured pipe capacity ~71 fps at 1080p).
+    width: 1920
+    height: 1080
+    encoding: bgr8
+    # Publishes at most one frame per tick and never repeats a frame.
+    publish_fps: 30.0
+    # auto: verified NVDEC/CUVID first, then GStreamer nvv4l2decoder, else software FFmpeg.
+    # ffmpeg | ffmpeg-hw | gstreamer force one backend and fail loudly if unusable.
+    decoder: ffmpeg   # gstreamer 需要带 playpath 的 URL；UE 的 rtmp://host:port/app 只能 ffmpeg
+    read_timeout_s: 5.0
+    reconnect_delay_s: 2.0
+    max_frame_age_s: 0.5
+    ffmpeg_path: ffmpeg
+    gst_launch_path: gst-launch-1.0
+    stats_period_s: 5.0
+    # 第二路降采样输出给 Python 消费者（YOLO）：同一次解码，多一次 scale。
+    secondary_topic: front_camera/image_small
+    secondary_width: 640
+    secondary_height: 360
