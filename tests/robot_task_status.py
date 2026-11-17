@@ -96,15 +96,15 @@ def main():
              dispatcher.action_clients['point_goal'].server_is_ready(), 'readiness')
         clock['start'] = time.monotonic()
         task_pub.publish(to_message(dict(
-            task_id=TASK_ID, waypoints=[31.0, 120.0, 0.0])))
+            task_id=TASK_ID, mission_seq_id=17, waypoints=[31.0, 120.0, 0.0])))
         wait(lambda: goals and any(m.progress == 100 for _, m in statuses), 'terminal 100')
         elapsed = time.monotonic() - clock['start']
         wait(lambda: any(e['event'] in ('completed', 'failed') and e['task_id'] == str(TASK_ID)
                          for e in events), 'terminal event')
 
-        own = [m for _, m in statuses if m.task_id == str(TASK_ID)]
+        own = [m for _, m in statuses if m.task_id == '17']
         progress = [m.progress for m in own]
-        stamps = [stamp for stamp, m in statuses if m.task_id == str(TASK_ID) and m.progress < 100]
+        stamps = [stamp for stamp, m in statuses if m.task_id == '17' and m.progress < 100]
         assert goals[0].target.latitude == 31.0 and goals[0].target.longitude == 120.0, goals[0]
         assert own, 'no TaskStatus for this task'
         assert 1 <= progress[0] <= 5, f'progress must start near 1, got {progress}'

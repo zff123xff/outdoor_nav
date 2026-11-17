@@ -18,9 +18,11 @@ float64 width_m
 float64 yaw_deg
 int16 gait_speed
 int16 air_route
+uint8 mission_seq_id
 ```
 
-`task_id` 是固定编号，不存在 `task_type` 字段。当前接受 140、141、142、143、145。GPS 数组按
+`task_id` 是固定任务类型编号，不存在 `task_type` 字段。当前接受 140、141、142、143、145。
+`mission_seq_id` 是本次任务的 0–255 序号，回传状态的 `task_id` 使用其十进制字符串；未提供时默认为 0。GPS 数组按
 `[latitude, longitude, altitude]` 重复排列；`center` 是一个 GPS 三元组。坐标经纬度是度、高度是米；
 `yaw_deg` 是 ENU 东向逆时针角度。GPS 数组的公共消息类型是 float32，需考虑量化。
 `gait_speed` 和 `air_route` 是预留字段，不影响当前执行行为。
@@ -40,7 +42,7 @@ int16 air_route
 ## 状态
 
 - `/<namespace>/robot_task_status`：`task_interfaces/msg/TaskStatus`，约 1 Hz。活动任务进度 1–99，终态 100；
-  `failures` 表示失败。空闲 ID 为字符串 `"0"`。
+  `failures` 表示失败。活动及终态的 `task_id` 为 `mission_seq_id` 的十进制字符串，空闲 ID 为字符串 `"0"`。
 - `/<namespace>/task_feedback`：`std_msgs/msg/String` JSON 事件，包含 `accepted`、`executing`、`rejected`、终态及错误信息。
 - MQTT 可选输入 `robots/<namespace>/task`，输出 `robots/<namespace>/taskstatus` 和 task_feedback；默认关闭。
 

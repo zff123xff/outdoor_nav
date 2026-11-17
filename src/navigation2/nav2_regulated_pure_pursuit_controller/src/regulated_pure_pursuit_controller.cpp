@@ -91,6 +91,11 @@ void RegulatedPurePursuitController::configure(
     node, plugin_name_ + ".prefer_supplied_path", rclcpp::ParameterValue(true));
   node->get_parameter(plugin_name_ + ".prefer_supplied_path", prefer_supplied_path_);
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".block_inscribed_cost", rclcpp::ParameterValue(true));
+  node->get_parameter(plugin_name_ + ".block_inscribed_cost", block_inscribed_cost_);
+  planner_->block_inscribed_cost_ = block_inscribed_cost_;
+  path_hysteresis_.block_inscribed_cost = block_inscribed_cost_;
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".local_path_smoothing_iterations", rclcpp::ParameterValue(2));
   node->get_parameter(
     plugin_name_ + ".local_path_smoothing_iterations", local_path_smoothing_iterations_);
@@ -107,12 +112,15 @@ void RegulatedPurePursuitController::configure(
     node, plugin_name_ + ".switch_only_on_obstacle", rclcpp::ParameterValue(false));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".log_path_switch", rclcpp::ParameterValue(false));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".log_path_trace", rclcpp::ParameterValue(false));
   node->get_parameter(plugin_name_ + ".enable_path_hysteresis", path_hysteresis_.enabled);
   node->get_parameter(plugin_name_ + ".switch_penalty", path_hysteresis_.switch_penalty);
   node->get_parameter(plugin_name_ + ".min_switch_interval", path_hysteresis_.min_switch_interval);
   node->get_parameter(
     plugin_name_ + ".switch_only_on_obstacle", path_hysteresis_.switch_only_on_obstacle);
   node->get_parameter(plugin_name_ + ".log_path_switch", log_path_switch_);
+  node->get_parameter(plugin_name_ + ".log_path_trace", log_path_trace_);
   if (!std::isfinite(path_hysteresis_.switch_penalty) || path_hysteresis_.switch_penalty < 0.0 ||
     !std::isfinite(path_hysteresis_.min_switch_interval) || path_hysteresis_.min_switch_interval < 0.0)
   {
@@ -407,6 +415,7 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   nav2_core::GoalChecker * goal_checker)
 {
   std::lock_guard<std::mutex> lock_reinit(mutex_);
+  ++cycle_seq_;
 
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
@@ -540,6 +549,78 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
     path_hysteresis_.reset();
     throw nav2_core::PlannerException("RegulatedPurePursuitController detected collision ahead!");
+  }
+
+  if (std::abs(linear_vel) < 1e-4) {
+    if (std::abs(angular_vel) < 1e-4) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 2000,
+        "controller_zero_command mode=%s goal_distance=%.3f carrot_distance=%.3f "
+        "path_error=%.3f goal_error=%.3f desired_vx=%.3f local_points=%zu",
+        heading_mode, goal_distance, carrot_dist, path_heading_error, angle_to_goal,
+        desired_linear_vel_, local_plan_.poses.size());
+    } else {
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, 3000,
+        "controller_rotation_only mode=%s command_wz=%.3f path_error=%.3f "
+        "goal_error=%.3f goal_distance=%.3f",
+        heading_mode, angular_vel, path_heading_error, angle_to_goal, goal_distance);
+    }
+  }
+
+  if (log_path_trace_) {
+    const auto & trace = path_hysteresis_.decision().projection;
+    const double pose_yaw = tf2::getYaw(pose.pose.orientation);
+    const double carrot_global_x = pose.pose.position.x +
+      std::cos(pose_yaw) * carrot_pose.pose.position.x -
+      std::sin(pose_yaw) * carrot_pose.pose.position.y;
+    const double carrot_global_y = pose.pose.position.y +
+      std::sin(pose_yaw) * carrot_pose.pose.position.x +
+      std::cos(pose_yaw) * carrot_pose.pose.position.y;
+    RCLCPP_INFO(logger_,
+      "[RPP_TRACE] cycle=%llu plan=%llu retained_id=%llu selected_id=%llu candidate_id=%llu "
+      "lineage=%llu "
+      "rev_in=%llu rev_out=%llu source=%s candidate_source=%s "
+      "proj_valid=%d seg=%zu t=%.3f err=%.3f s_local=%.3f s_base=%.3f s_absolute=%.3f "
+      "lineage_valid=%d output_lineage_valid=%d connection_valid=%d "
+      "points_in=%zu points_out=%zu guide_points=%zu selected_points=%zu "
+      "pose_frame=%s pose_stamp=%d.%09u robot=(%.6f,%.6f,%.6f) "
+      "match_frame=%s match_stamp=%d.%09u match_robot=(%.6f,%.6f,%.6f) "
+      "project=(%.3f,%.3f) yaw_seg=%.3f yaw_robot=%.3f connection_yaw_error=%.3f "
+      "input_first=(%.6f,%.6f) input_second=(%.6f,%.6f) "
+      "output_first=(%.6f,%.6f) output_second=(%.6f,%.6f) "
+      "output_third=(%.6f,%.6f) connection_length=%.6f connection_yaw=%.6f "
+      "carrot_global=(%.6f,%.6f) "
+      "carrot=(%.3f,%.3f) carrot_angle=%.3f mode=%s rotation_direction=%.1f "
+      "vx=%.3f wz=%.3f reason=%s",
+      static_cast<unsigned long long>(cycle_seq_), static_cast<unsigned long long>(plan_seq_),
+      static_cast<unsigned long long>(trace.path_id),
+      static_cast<unsigned long long>(path_hysteresis_.currentId()),
+      static_cast<unsigned long long>(path_hysteresis_.decision().candidate_id),
+      static_cast<unsigned long long>(trace.lineage_id),
+      static_cast<unsigned long long>(trace.input_geometry_rev),
+      static_cast<unsigned long long>(trace.output_geometry_rev),
+      trace.selected_source.c_str(), candidate_source_.c_str(), trace.valid, trace.segment_idx,
+      trace.project_t, trace.project_error, trace.local_s, trace.base_s,
+      trace.lineage_valid ? trace.base_s + trace.local_s :
+      std::numeric_limits<double>::quiet_NaN(),
+      trace.lineage_valid, trace.output_lineage_valid, trace.connection_valid,
+      trace.input_points, trace.output_points,
+      trace.guide_output_points, trace.final_selected_points,
+      pose.header.frame_id.c_str(), pose.header.stamp.sec, pose.header.stamp.nanosec,
+      pose.pose.position.x, pose.pose.position.y, pose_yaw,
+      trace.robot_frame.c_str(), trace.robot_stamp_sec, trace.robot_stamp_nanosec,
+      trace.robot_x, trace.robot_y, trace.robot_yaw,
+      trace.projected_x, trace.projected_y, trace.segment_yaw, trace.robot_yaw,
+      trace.connection_yaw_error,
+      trace.input_first_x, trace.input_first_y, trace.input_second_x, trace.input_second_y,
+      trace.output_first_x, trace.output_first_y, trace.output_second_x, trace.output_second_y,
+      trace.output_third_x, trace.output_third_y,
+      trace.connection_length, trace.connection_yaw,
+      carrot_global_x, carrot_global_y,
+      carrot_pose.pose.position.x, carrot_pose.pose.position.y,
+      path_heading_error, heading_mode, rotation_direction_, linear_vel, angular_vel,
+      path_hysteresis_.decision().reason.c_str());
   }
 
   if (last_heading_mode_ != heading_mode) {
@@ -993,6 +1074,13 @@ void RegulatedPurePursuitController::applyConstraints(
 
 void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
+  ++plan_seq_;
+  ++global_geometry_rev_;
+  global_base_s_ = 0.0;
+  if (log_path_trace_) {
+    RCLCPP_INFO(logger_, "[RPP_TRACE_PLAN] plan=%llu points=%zu frame=%s",
+      static_cast<unsigned long long>(plan_seq_), path.poses.size(), path.header.frame_id.c_str());
+  }
   path_hysteresis_.setGoal(path);
   global_plan_ = path;
   rotation_command_ = 0.0;
@@ -1154,6 +1242,8 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
   const geometry_msgs::msg::PoseStamped & robot_pose)
 {
   local_plan_.poses.clear();
+  const auto blocked_cost = block_inscribed_cost_ ?
+    nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE : nav2_costmap_2d::LETHAL_OBSTACLE;
   if (global_plan_.poses.size() < 1)
   {
     RCLCPP_WARN(logger_, "Global plan is empty, cannot find goal");
@@ -1167,6 +1257,22 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
   auto closest = nav2_util::geometry_utils::min_by(
     global_plan_.poses.begin(), global_plan_.poses.end(),
     [&robot_pose](const auto & point) {return euclidean_distance(robot_pose, point);});
+  const auto closest_idx = static_cast<size_t>(std::distance(global_plan_.poses.begin(), closest));
+  double pruned_s = 0.0;
+  for (size_t i = 1; i <= closest_idx; ++i) {
+    pruned_s += euclidean_distance(global_plan_.poses[i - 1], global_plan_.poses[i]);
+  }
+  global_base_s_ += pruned_s;
+  if (closest_idx > 0) {++global_geometry_rev_;}
+  if (log_path_trace_) {
+    RCLCPP_INFO(logger_,
+      "[RPP_TRACE_MATCH] cycle=%llu plan=%llu rev=%llu closest_idx=%zu err=%.3f "
+      "s_base=%.3f pruned_s=%.3f remaining_before=%zu",
+      static_cast<unsigned long long>(cycle_seq_), static_cast<unsigned long long>(plan_seq_),
+      static_cast<unsigned long long>(global_geometry_rev_), closest_idx,
+      euclidean_distance(robot_pose, *closest), global_base_s_, pruned_s,
+      global_plan_.poses.size());
+  }
   global_plan_.poses.erase(global_plan_.poses.begin(), closest);
 
   bool found_goal = false;
@@ -1210,7 +1316,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
       break;
     }
 
-    if (costmap_->getCost(cx, cy) < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+    if (costmap_->getCost(cx, cy) < blocked_cost)
     {
       goal = *it;
       found_goal = true;
@@ -1247,13 +1353,13 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
       unsigned int x, y;
       if (!costmap_->worldToMap(previous.x + t * (next.x - previous.x),
         previous.y + t * (next.y - previous.y), x, y) ||
-        costmap_->getCost(x, y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+        costmap_->getCost(x, y) >= blocked_cost)
       {
         supplied_safe = false; break;
       }
       if (have_previous && x != previous_x && y != previous_y &&
-        (costmap_->getCost(previous_x, y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE ||
-        costmap_->getCost(x, previous_y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
+        (costmap_->getCost(previous_x, y) >= blocked_cost ||
+        costmap_->getCost(x, previous_y) >= blocked_cost))
       {
         supplied_safe = false; break;
       }
@@ -1264,8 +1370,10 @@ nav_msgs::msg::Path RegulatedPurePursuitController::getLocalPlan(
     }
   }
   if (supplied_safe) {
+    candidate_source_ = "supplied";
     local_plan_ = linearInterpolation(supplied, costmap_->getResolution());
   } else {
+    candidate_source_ = "theta_star";
     planner_->setStartAndGoal(robot_pose, goal);
     getPlan(local_plan_);
   }
@@ -1293,7 +1401,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::selectLocalPath(
     planner_->w_euc_cost_, planner_->w_traversal_cost_,
     [this](double x, double y, double heading) {
       return isRetainedPathPoseSafe(x, y, heading);
-    });
+    }, cycle_seq_);
   const auto & choice = path_hysteresis_.decision();
   if (log_path_switch_) {
     // Both switches and repeated holds are throttled; normal operation logs nothing.
@@ -1316,11 +1424,10 @@ nav_msgs::msg::Path RegulatedPurePursuitController::selectLocalPath(
 void RegulatedPurePursuitController::getPlan(nav_msgs::msg::Path & path)
 {
   std::vector<coordsW> tmp_path;
-  // if (planner_->isUnsafeToPlan()) {
-  //   RCLCPP_ERROR(logger_, "Either of the start or goal pose are an obstacle! ");
-  //   path.poses.clear();
-  // } else 
-  if (planner_->generatePath(tmp_path)) {
+  if (planner_->isUnsafeToPlan()) {
+    RCLCPP_ERROR(logger_, "Start or goal pose is blocked at the configured cost threshold");
+    path.poses.clear();
+  } else if (planner_->generatePath(tmp_path)) {
     path = linearInterpolation(smoothLocalPath(tmp_path), planner_->costmap_->getResolution());
   } else {
     RCLCPP_ERROR(logger_, "Could not generate path between the given poses");
@@ -1331,6 +1438,8 @@ void RegulatedPurePursuitController::getPlan(nav_msgs::msg::Path & path)
 std::vector<coordsW> RegulatedPurePursuitController::smoothLocalPath(
   const std::vector<coordsW> & path)
 {
+  const auto blocked_cost = block_inscribed_cost_ ?
+    nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE : nav2_costmap_2d::LETHAL_OBSTACLE;
   auto safe = [&](const coordsW & a, const coordsW & b, unsigned char & peak) {
       const int count = std::max(1, static_cast<int>(std::ceil(
         std::hypot(b.x - a.x, b.y - a.y) / (costmap_->getResolution() / 3.0))));
@@ -1343,10 +1452,10 @@ std::vector<coordsW> RegulatedPurePursuitController::smoothLocalPath(
           return false;
         }
         const auto cost = costmap_->getCost(x, y);
-        if (cost >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {return false;}
+        if (cost >= blocked_cost) {return false;}
         if (previous && x != px && y != py &&
-          (costmap_->getCost(px, y) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE ||
-          costmap_->getCost(x, py) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
+          (costmap_->getCost(px, y) >= blocked_cost ||
+          costmap_->getCost(x, py) >= blocked_cost))
         {
           return false;
         }
@@ -1445,6 +1554,7 @@ RegulatedPurePursuitController::dynamicParametersCallback(
       }
     }
     if (name == plugin_name_ + ".enable_path_hysteresis" || name == plugin_name_ + ".log_path_switch" ||
+      name == plugin_name_ + ".log_path_trace" ||
       name == plugin_name_ + ".switch_only_on_obstacle") {
       if (parameter.get_type() != ParameterType::PARAMETER_BOOL) {
         result.successful = false; result.reason = "Path hysteresis flags must be boolean"; return result;
@@ -1522,12 +1632,19 @@ RegulatedPurePursuitController::dynamicParametersCallback(
       path_hysteresis_.reset();
     } else if (name == plugin_name_ + ".log_path_switch") {
       log_path_switch_ = parameter.as_bool();
+    } else if (name == plugin_name_ + ".log_path_trace") {
+      log_path_trace_ = parameter.as_bool();
     } else if (name == plugin_name_ + ".switch_penalty") {
       path_hysteresis_.switch_penalty = parameter.as_double();
     } else if (name == plugin_name_ + ".min_switch_interval") {
       path_hysteresis_.min_switch_interval = parameter.as_double();
     } else if (name == plugin_name_ + ".switch_only_on_obstacle") {
       path_hysteresis_.switch_only_on_obstacle = parameter.as_bool();
+      path_hysteresis_.reset();
+    } else if (name == plugin_name_ + ".block_inscribed_cost") {
+      block_inscribed_cost_ = parameter.as_bool();
+      planner_->block_inscribed_cost_ = block_inscribed_cost_;
+      path_hysteresis_.block_inscribed_cost = block_inscribed_cost_;
       path_hysteresis_.reset();
     }
 

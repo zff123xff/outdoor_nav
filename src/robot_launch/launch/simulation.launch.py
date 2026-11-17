@@ -21,6 +21,19 @@ from launch_ros.actions import Node, SetRemap
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+def resolved_robot_namespace(context):
+    with open(LaunchConfiguration("params_file").perform(context)) as stream:
+        config = yaml.safe_load(stream) or {}
+    ns = (LaunchConfiguration("robot_namespace").perform(context) or
+          config.get("launch_config", {}).get("ros__parameters", {}).get("robot_namespace", "robot_1"))
+    if not isinstance(ns, str):
+        raise RuntimeError("robot_namespace must be a string")
+    ns = ns.strip("/")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", ns):
+        raise RuntimeError("robot_namespace must be one non-empty ROS name")
+    return ns
+
+
 def mavros_bridge(context):
 
     if LaunchConfiguration(
@@ -37,6 +50,7 @@ def mavros_bridge(context):
     enable = LaunchConfiguration(
         "mavros_bridge_enable"
     ).perform(context)
+    namespace = resolved_robot_namespace(context)
 
     supervisor_path = os.path.join(
         bridge_dir,
@@ -60,6 +74,8 @@ def mavros_bridge(context):
                 bridge_dir,
                 "--enable",
                 enable,
+                "--namespace",
+                namespace,
             ],
 
             name="mavros_bridge_supervisor",
@@ -78,13 +94,7 @@ def bringup(context):
     share = get_package_share_directory("robot_launch")
     with open(LaunchConfiguration("params_file").perform(context)) as stream:
         config = yaml.safe_load(stream) or {}
-    ns = (LaunchConfiguration("robot_namespace").perform(context) or
-          config.get("launch_config", {}).get("ros__parameters", {}).get("robot_namespace", "robot_1"))
-    if not isinstance(ns, str):
-        raise RuntimeError("robot_namespace must be a string")
-    ns = ns.strip("/")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", ns):
-        raise RuntimeError("robot_namespace must be one non-empty ROS name")
+    ns = resolved_robot_namespace(context)
     managed = ["controller_server", "straight_planner"]
     startup = config.get("lifecycle_startup_watchdog", {}).get("ros__parameters", {})
     startup_timeout = startup.get("startup_timeout", 180.0)
@@ -189,7 +199,7 @@ def generate_launch_description():
             get_package_share_directory('rtmp_image_bridge'), 'config', 'rtmp.yaml')),
         DeclareLaunchArgument('video_url', default_value='', description='Empty preserves RTMP URL from video_config'),
         DeclareLaunchArgument("params_file", default_value=os.path.join(share, "config", "go2w_nav2.yaml")),
-        DeclareLaunchArgument("use_ue_gps_origin", default_value="true",
+        DeclareLaunchArgument("use_ue_gps_origin", default_value="false",
                               description="Receive UE GPS origin in background; navigation never waits for it"),
         DeclareLaunchArgument("origin_topic", default_value="simulation/gps_origin"),
         DeclareLaunchArgument("use_mavros_bridge", default_value="true",

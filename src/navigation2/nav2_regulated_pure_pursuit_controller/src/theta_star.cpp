@@ -114,6 +114,12 @@ void ThetaStar::setNeighbors(const tree_node * curr_data)
       if (!isSafe(mx, my)) {
         continue;
       }
+      if (moves[i].x != 0 && moves[i].y != 0 &&
+        (!isSafe(curr_data->x + moves[i].x, curr_data->y) ||
+        !isSafe(curr_data->x, curr_data->y + moves[i].y)))
+      {
+        continue;
+      }
     } else {
       continue;
     }
@@ -174,6 +180,27 @@ bool ThetaStar::losCheck(
   double & sl_cost) const
 {
   sl_cost = 0;
+
+  // Bresenham's corner cases can miss a lethal cell crossed by a shortcut.
+  // Sample the centre-to-centre segment and reject diagonal corner cutting.
+  const int samples = std::max(1, 4 * std::max(std::abs(x1 - x0), std::abs(y1 - y0)));
+  int previous_x = x0;
+  int previous_y = y0;
+  for (int i = 0; i <= samples; ++i) {
+    const double t = static_cast<double>(i) / samples;
+    const int x = static_cast<int>(std::floor(x0 + t * (x1 - x0) + 0.5));
+    const int y = static_cast<int>(std::floor(y0 + t * (y1 - y0) + 0.5));
+    if (!withinLimits(x, y) || !isSafe(x, y)) {
+      return false;
+    }
+    if (x != previous_x && y != previous_y &&
+      (!isSafe(previous_x, y) || !isSafe(x, previous_y)))
+    {
+      return false;
+    }
+    previous_x = x;
+    previous_y = y;
+  }
 
   int cx, cy;
   int dy = abs(y1 - y0), dx = abs(x1 - x0), f = 0;

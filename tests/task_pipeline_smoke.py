@@ -68,22 +68,23 @@ def main():
         assert all(s.task_id=='0' and s.progress==0 and s.failures==0 and
                    s.param1==s.param2==s.param3==0. for s in statuses)
         p=[31.,120.,0.]
-        for index,data in enumerate([dict(task_id=140,waypoints=p,gait_speed=2,air_route=7),
-            dict(task_id=145,waypoints=p*2),dict(task_id=141,waypoints=p*2),
-            dict(task_id=142,center=p,length_m=10.,width_m=5.),dict(task_id=143)]):
+        for index,data in enumerate([dict(task_id=140,mission_seq_id=11,waypoints=p,gait_speed=2,air_route=7),
+            dict(task_id=145,mission_seq_id=12,waypoints=p*2),dict(task_id=141,mission_seq_id=13,waypoints=p*2),
+            dict(task_id=142,mission_seq_id=14,center=p,length_m=10.,width_m=5.),
+            dict(task_id=143,mission_seq_id=15)]):
             publisher.publish(to_message(data))
             wait(lambda:len(terminal())==index+1,'sequential completion')
         assert [identity for identity,kind in calls]==['140','145','145','141','142','143'],(calls,events)
         assert [e['task_id'] for e in terminal()]==['140','145','141','142','143']
         assert next(e for e in terminal() if e['task_id']=='142')['event']=='failed'
         wait(lambda:len([s for s in statuses if s.progress==100])==5,'statuses')
-        assert [s.task_id for s in statuses if s.progress==100]==['140','145','141','142','143']
-        assert any(s.task_id=='142' and s.failures==1 for s in statuses)
+        assert [s.task_id for s in statuses if s.progress==100]==['11','12','13','14','15']
+        assert any(s.task_id=='14' and s.failures==1 for s in statuses)
         # A second ordinary task is rejected while the first is active.
         before=len(calls)
-        publisher.publish(to_message(dict(task_id=140,waypoints=p)))
+        publisher.publish(to_message(dict(task_id=140,mission_seq_id=16,waypoints=p)))
         wait(lambda:len(calls)==before+1 and dispatcher.current is not None,'active task')
-        publisher.publish(to_message(dict(task_id=140,waypoints=p)))
+        publisher.publish(to_message(dict(task_id=140,mission_seq_id=17,waypoints=p)))
         wait(lambda:any(e['event']=='rejected' and e['task_id']=='140' for e in events),'busy rejection')
         publisher.publish(Task(task_id=141,cancel=True))
         wait(lambda:any(e['event']=='rejected' and e['task_id']=='141' for e in events),'mismatched cancel rejection')
